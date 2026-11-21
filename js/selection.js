@@ -1,6 +1,6 @@
-// Unified Selection, Marquee, Multi-Drag/Resize, Grouping & Clipboard for Objects + Drawings
+// Unified Selection, Marquee, Multi-Drag/Resize, Z-Layering (Objects + Drawings), Font Picker & Grouping
 
-import { CLIPBOARD_MARKER_PREFIX, DRAW_COLORS, NOTE_COLORS, uid } from './config.js';
+import { CLIPBOARD_MARKER_PREFIX, DRAW_COLORS, FONT_PRESETS, NOTE_COLORS, uid } from './config.js';
 
 function boxesIntersect(a, b) {
   return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
@@ -17,7 +17,11 @@ export class SelectionManager {
     objects,
     drawing,
     onMutate,
-    onToast
+    onToast,
+    isTeacher = () => true,
+    canEditObjects = () => true,
+    getNextZIndex,
+    getMinZIndex
   }) {
     this.viewportEl = viewportEl;
     this.selectionBoxEl = selectionBoxEl;
@@ -29,6 +33,10 @@ export class SelectionManager {
     this.drawing = drawing;
     this.onMutate = onMutate;
     this.onToast = onToast;
+    this.isTeacher = isTeacher;
+    this.canEditObjects = canEditObjects;
+    this.getNextZIndex = getNextZIndex;
+    this.getMinZIndex = getMinZIndex;
 
     this.selectedIds = new Set();
     this.interaction = null;
@@ -39,7 +47,17 @@ export class SelectionManager {
     this._bindEvents();
   }
 
-  // --- Lookup Helpers ---
+  getActiveInteractionIds() {
+    const ids = new Set();
+    if (!this.interaction) return ids;
+    if (this.interaction.snapshots) {
+      this.interaction.snapshots.forEach((s) => ids.add(s.item.id));
+    }
+    if (this.interaction.obj) {
+      ids.add(this.interaction.obj.id);
+    }
+    return ids;
+  }
 
   getItem(id) {
     const obj = this.objects.getById(id);
@@ -82,14 +100,14 @@ export class SelectionManager {
     if (groupIds.size > 0) {
       for (const it of this.getAllItems()) {
         if (it.data.groupId && groupIds.has(it.data.groupId)) {
-          result.add(it.data.id);
+          if (this.isTeacher() || !it.data.locked) {
+            result.add(it.data.id);
+          }
         }
       }
     }
     return result;
   }
-
-  // --- Selection API ---
 
   selectOnly(idsIterable) {
     if (this.objects.isEditing()) {
@@ -98,12 +116,18 @@ export class SelectionManager {
         this.objects.stopEditing();
       }
     }
-    this.selectedIds = this.expandWithGroups(idsIterable);
+    const filtered = [...idsIterable].filter((id) => {
+      const it = this.getItem(id);
+      return it && (this.isTeacher() || !it.data.locked);
+    });
+    this.selectedIds = this.expandWithGroups(filtered);
     this.render();
   }
 
   toggleItemSelection(id) {
     if (this.objects.isEditing()) this.objects.stopEditing();
+    const it = this.getItem(id);
+    if (!it || (!this.isTeacher() && it.data.locked)) return;
     const expanded = this.expandWithGroups([id]);
     const allPresent = [...expanded].every((x) => this.selectedIds.has(x));
     if (allPresent) {
@@ -121,6 +145,7 @@ export class SelectionManager {
   }
 
   selectAll() {
+    if (!this.canEditObjects()) return;
     if (this.objects.isEditing()) this.objects.stopEditing();
     const ids = [];
     for (const it of this.getAllItems()) {
@@ -132,33 +157,42 @@ export class SelectionManager {
 
   pruneMissing() {
     for (const id of [...this.selectedIds]) {
-      if (!this.getItem(id)) this.selectedIds.delete(id);
+      const it = this.getItem(id);
+      if (!it || (!this.isTeacher() && it.data.locked)) {
+        this.selectedIds.delete(id);
+      }
     }
     this.render();
   }
 
-  // --- Hit Testing for Select Mode ---
-
+  // Respect actual visual zIndex between objects & strokes!
   hitTestWorld(wx, wy) {
-    // Drawings visually sit on top of objects, so check unlocked strokes first
     const hitStroke = this.drawing.hitTest(wx, wy);
     const hitObj = this.objects.hitTest(wx, wy);
 
-    if (hitStroke && (!hitStroke.locked || !hitObj || hitObj.locked)) {
-      return { kind: 'stroke', data: hitStroke };
-    }
-    if (hitObj) {
-      return { kind: 'object', data: hitObj };
-    }
-    if (hitStroke) {
-      return { kind: 'stroke', data: hitStroke };
-    }
-    return null;
+    const candidates = [];
+    if (hitStroke) candidates.push({ kind: 'stroke', data: hitStroke });
+    if (hitObj) candidates.push({ kind: 'object', data: hitObj });
+
+    // Students cannot select locked items at all
+    const allowed = this.isTeacher()
+      ? candidates
+      : candidates.filter((c) => !c.data.locked);
+
+    if (!allowed.length) return null;
+    if (allowed.length === 1) return allowed[0];
+
+    // Prefer unlocked over locked; if both unlocked (or both locked), pick higher zIndex!
+    allowed.sort((a, b) => {
+      const lockDiff = (a.data.locked ? 1 : 0) - (b.data.locked ? 1 : 0);
+      if (lockDiff !== 0) return lockDiff;
+      return (b.data.zIndex ?? 0) - (a.data.zIndex ?? 0);
+    });
+    return allowed[0];
   }
 
-  // --- Pointer Handling in Select Mode ---
-
   handleViewportPointerDown(e) {
+    if (!this.canEditObjects()) return;
     const worldPt = this.viewport.screenToWorld(e.clientX, e.clientY);
     const hit = this.hitTestWorld(worldPt.x, worldPt.y);
 
@@ -177,7 +211,6 @@ export class SelectionManager {
       this.selectOnly([hit.data.id]);
     }
 
-    // Start dragging if any selected item is unlocked
     const movable = this.getSelectedItems().filter((it) => !it.data.locked);
     if (movable.length > 0) {
       this._startDrag(e.clientX, e.clientY, movable);
@@ -273,10 +306,9 @@ export class SelectionManager {
   }
 
   _bindEvents() {
-    // Pointer down directly on unified selection box or its handles
     this.selectionBoxEl.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
-      if (this.viewport.spacePressed) return;
+      if (this.viewport.spacePressed || !this.canEditObjects()) return;
       e.stopPropagation();
 
       const handle = e.target.dataset?.handle;
@@ -289,7 +321,6 @@ export class SelectionManager {
         return;
       }
 
-      // Shift-click on box: toggle underlying item
       if (e.shiftKey) {
         const pt = this.viewport.screenToWorld(e.clientX, e.clientY);
         const hit = this.hitTestWorld(pt.x, pt.y);
@@ -303,8 +334,8 @@ export class SelectionManager {
       }
     });
 
-    // Double-click anywhere on viewport over a text/note -> enter editing reliably!
     this.viewportEl.addEventListener('dblclick', (e) => {
+      if (!this.canEditObjects()) return;
       if (e.target.closest('#object-toolbar')) return;
       if (e.target.closest('.board-obj.editing .board-obj-editable')) return;
       const pt = this.viewport.screenToWorld(e.clientX, e.clientY);
@@ -370,7 +401,6 @@ export class SelectionManager {
         if (it.handle.includes('w')) minX = Math.min(ob.maxX - 24, ob.minX + dx);
         if (it.handle.includes('n')) minY = Math.min(ob.maxY - 24, ob.minY + dy);
 
-        // Preserve aspect ratio for single image (unless Shift held) or multi-selection (when Shift held)
         if (it.singleImageRatio && !e.shiftKey) {
           const nw = maxX - minX;
           const nh = Math.max(24, nw / it.singleImageRatio);
@@ -422,19 +452,33 @@ export class SelectionManager {
         this.marqueeEl.classList.add('hidden');
         this.render();
       } else if (it.moved) {
+        const changedObjectIds = [];
+        const changedStrokeIds = [];
+        if (it.snapshots) {
+          it.snapshots.forEach((s) => {
+            if (s.kind === 'object') changedObjectIds.push(s.item.id);
+            else changedStrokeIds.push(s.item.id);
+          });
+        } else if (it.obj) {
+          changedObjectIds.push(it.obj.id);
+        }
         this.render();
-        this.onMutate(it.mode);
+        this.onMutate(it.mode, { changedObjectIds, changedStrokeIds });
       }
     });
   }
 
-  // --- Grouping, Locking, Z-Order, Deleting ---
+  _collectMutationMeta(items) {
+    return {
+      changedObjectIds: items.filter((i) => i.kind === 'object').map((i) => i.data.id),
+      changedStrokeIds: items.filter((i) => i.kind === 'stroke').map((i) => i.data.id)
+    };
+  }
 
   canGroup(items) {
     const unlocked = items.filter((it) => !it.data.locked);
     if (unlocked.length < 2) return false;
     const gids = new Set(unlocked.map((it) => it.data.groupId || null));
-    // Already one single group?
     if (gids.size === 1 && !gids.has(null)) return false;
     return true;
   }
@@ -450,6 +494,7 @@ export class SelectionManager {
   }
 
   groupSelected() {
+    if (!this.canEditObjects()) return;
     const items = this.getSelectedItems().filter((it) => !it.data.locked);
     if (items.length < 2) return;
     const gid = uid('grp');
@@ -457,27 +502,29 @@ export class SelectionManager {
       it.data.groupId = gid;
     }
     this.render();
-    this.onMutate('group');
+    this.onMutate('group', this._collectMutationMeta(items));
     this.onToast('Елементи згруповано');
   }
 
   ungroupSelected() {
+    if (!this.canEditObjects()) return;
     const items = this.getSelectedItems();
-    let changed = false;
+    const touched = [];
     for (const it of items) {
-      if (it.data.groupId) {
+      if (it.data.groupId && !it.data.locked) {
         delete it.data.groupId;
-        changed = true;
+        touched.push(it);
       }
     }
-    if (changed) {
+    if (touched.length) {
       this.render();
-      this.onMutate('ungroup');
+      this.onMutate('ungroup', this._collectMutationMeta(touched));
       this.onToast('Групу розгруповано');
     }
   }
 
   toggleLockSelected() {
+    if (!this.isTeacher()) return;
     const items = this.getSelectedItems();
     if (!items.length) return;
     const allLocked = items.every((it) => it.data.locked);
@@ -487,10 +534,11 @@ export class SelectionManager {
       if (it.kind === 'object') this.objects.updateObjectEl(it.data);
     }
     this.render();
-    this.onMutate('toggle-lock');
+    this.onMutate('toggle-lock', this._collectMutationMeta(items));
   }
 
   deleteSelected() {
+    if (!this.canEditObjects()) return false;
     const items = this.getSelectedItems().filter((it) => !it.data.locked);
     if (!items.length) return false;
     const objIds = new Set(items.filter((i) => i.kind === 'object').map((i) => i.data.id));
@@ -500,42 +548,54 @@ export class SelectionManager {
     if (r1 || r2) {
       items.forEach((i) => this.selectedIds.delete(i.data.id));
       this.render();
-      this.onMutate('delete');
+      this.onMutate('delete', {
+        deletedObjectIds: [...objIds],
+        deletedStrokeIds: [...strIds]
+      });
       return true;
     }
     return false;
   }
 
+  // Works for BOTH objects AND drawings (pen, highlighter, shapes)!
   bringToFrontSelected() {
-    const objs = this.getSelectedItems().filter((i) => i.kind === 'object' && !i.data.locked);
-    if (!objs.length) return;
-    let z = this.objects.nextZIndex();
-    for (const it of objs) {
+    if (!this.canEditObjects()) return;
+    const unlocked = this.getSelectedItems().filter((i) => !i.data.locked);
+    if (!unlocked.length) return;
+    // Preserve relative order among selected items
+    unlocked.sort((a, b) => (a.data.zIndex ?? 0) - (b.data.zIndex ?? 0));
+    let z = this.getNextZIndex();
+    for (const it of unlocked) {
       it.data.zIndex = z++;
-      this.objects.updateObjectEl(it.data);
+      if (it.kind === 'object') this.objects.updateObjectEl(it.data);
+      else this.drawing.updateStrokeEl(it.data);
     }
-    this.onMutate('z-front');
+    this.onMutate('z-front', this._collectMutationMeta(unlocked));
   }
 
   sendToBackSelected() {
-    const objs = this.getSelectedItems().filter((i) => i.kind === 'object' && !i.data.locked);
-    if (!objs.length) return;
-    let z = this.objects.minZIndex();
-    for (const it of objs) {
+    if (!this.canEditObjects()) return;
+    const unlocked = this.getSelectedItems().filter((i) => !i.data.locked);
+    if (!unlocked.length) return;
+    unlocked.sort((a, b) => (b.data.zIndex ?? 0) - (a.data.zIndex ?? 0));
+    let z = this.getMinZIndex();
+    for (const it of unlocked) {
       it.data.zIndex = z--;
-      this.objects.updateObjectEl(it.data);
+      if (it.kind === 'object') this.objects.updateObjectEl(it.data);
+      else this.drawing.updateStrokeEl(it.data);
     }
-    this.onMutate('z-back');
+    this.onMutate('z-back', this._collectMutationMeta(unlocked));
   }
 
-  // --- Clipboard: Copy / Cut / Paste / Duplicate ---
+  // --- Clipboard ---
 
   hasClipboard() {
     return Boolean(this.clipboard && (this.clipboard.objects.length || this.clipboard.strokes.length));
   }
 
   copySelected(clipboardEvent = null) {
-    const items = this.getSelectedItems();
+    if (!this.canEditObjects()) return false;
+    const items = this.getSelectedItems().filter((i) => this.isTeacher() || !i.data.locked);
     if (!items.length) return false;
 
     this.clipboard = {
@@ -563,6 +623,7 @@ export class SelectionManager {
   }
 
   pasteInternal(customPayload = null) {
+    if (!this.canEditObjects()) return false;
     const payload = customPayload || this.clipboard;
     if (!payload || (!payload.objects.length && !payload.strokes.length)) return false;
 
@@ -578,7 +639,8 @@ export class SelectionManager {
 
     const newIds = [];
     const newObjs = [];
-    let nextZ = this.objects.nextZIndex();
+    const newStrokes = [];
+    let nextZ = this.getNextZIndex();
 
     for (const src of payload.objects) {
       const copy = JSON.parse(JSON.stringify(src));
@@ -592,11 +654,11 @@ export class SelectionManager {
       newIds.push(copy.id);
     }
 
-    const newStrokes = [];
     for (const src of payload.strokes) {
       const copy = JSON.parse(JSON.stringify(src));
       copy.id = uid(copy.points ? 'str' : 'shp');
       copy.locked = false;
+      copy.zIndex = nextZ++;
       if (copy.groupId) copy.groupId = remapGroup(copy.groupId);
       this.drawing.translateStrokeInPlace(copy, offset, offset);
       newStrokes.push(copy);
@@ -607,12 +669,16 @@ export class SelectionManager {
     if (newStrokes.length) this.drawing.addRawStrokes(newStrokes);
 
     this.selectOnly(newIds);
-    this.onMutate('paste');
+    this.onMutate('paste', {
+      changedObjectIds: newObjs.map((o) => o.id),
+      changedStrokeIds: newStrokes.map((s) => s.id)
+    });
     return true;
   }
 
   duplicateSelected() {
-    const items = this.getSelectedItems();
+    if (!this.canEditObjects()) return;
+    const items = this.getSelectedItems().filter((i) => this.isTeacher() || !i.data.locked);
     if (!items.length) return;
     const payload = {
       objects: items.filter((i) => i.kind === 'object').map((i) => JSON.parse(JSON.stringify(i.data))),
@@ -644,7 +710,6 @@ export class SelectionManager {
   renderOverlayOnly() {
     this.outlinesEl.innerHTML = '';
 
-    // Hide selection box while editing text so textarea gets direct clicks & typing
     if (this.objects.isEditing()) {
       this.selectionBoxEl.classList.add('hidden');
       return;
@@ -656,7 +721,6 @@ export class SelectionManager {
       return;
     }
 
-    // Individual item outlines when multiple items are selected
     if (items.length > 1) {
       for (const it of items) {
         const b = this.getItemBounds(it);
@@ -687,7 +751,6 @@ export class SelectionManager {
     this.selectionBoxEl.style.height = `${Math.max(12, bounds.maxY - bounds.minY)}px`;
     this.selectionBoxEl.style.transform = singleObj && singleObj.rotation ? `rotate(${singleObj.rotation}deg)` : '';
 
-    // Show/hide handles
     this.selectionBoxEl.querySelectorAll('.resize-handle').forEach((h) => {
       h.classList.toggle('hidden', allLocked);
     });
@@ -699,7 +762,7 @@ export class SelectionManager {
 
   _renderContextBar() {
     const items = this.getSelectedItems();
-    if (!items.length || this.objects.isEditing()) {
+    if (!items.length || this.objects.isEditing() || !this.canEditObjects()) {
       this.toolbarEl.classList.add('hidden');
       this.toolbarEl.innerHTML = '';
       return;
@@ -732,14 +795,12 @@ export class SelectionManager {
     const unlocked = items.filter((i) => !i.data.locked);
     const singleObj = items.length === 1 && items[0].kind === 'object' ? items[0].data : null;
 
-    // Edit text button for single unlocked text/note
     if (singleObj && !singleObj.locked && (singleObj.type === 'text' || singleObj.type === 'note')) {
       addBtn('✏️ Писати', 'Редагувати текст (або подвійний клік / Enter)', () => {
         this.objects.startEditing(singleObj.id);
       }, 'accent');
     }
 
-    // Group / Ungroup
     if (this.canGroup(items)) {
       addBtn('🧩 Згрупувати', 'Об’єднати вибране в групу (Ctrl+G)', () => this.groupSelected(), 'accent');
     }
@@ -747,39 +808,62 @@ export class SelectionManager {
       addBtn('🔓 Розгрупувати', 'Роз’єднати групу (Ctrl+Shift+G)', () => this.ungroupSelected());
     }
 
-    // Lock / Unlock
-    addBtn(
-      allLocked ? '🔓 Розблокувати' : '🔒 Закріпити',
-      'Заблокувати, щоб не рухалося під час вправи',
-      () => this.toggleLockSelected(),
-      allLocked ? 'active' : ''
-    );
+    if (this.isTeacher()) {
+      addBtn(
+        allLocked ? '🔓 Розблокувати' : '🔒 Закріпити',
+        'Заблокувати, щоб не рухалося під час вправи',
+        () => this.toggleLockSelected(),
+        allLocked ? 'active' : ''
+      );
+    }
 
     if (unlocked.length > 0) {
+      // Z-Order buttons now work for BOTH images/text AND pen/marker/shapes!
+      addBtn('⬆️', 'На передній план (поверх усього)', () => this.bringToFrontSelected());
+      addBtn('⬇️', 'На задній план (під усе)', () => this.sendToBackSelected());
+
       const unlockedObjs = unlocked.filter((i) => i.kind === 'object');
       const unlockedStrokes = unlocked.filter((i) => i.kind === 'stroke');
 
-      if (unlockedObjs.length > 0) {
-        addBtn('⬆️', 'На передній план', () => this.bringToFrontSelected());
-        addBtn('⬇️', 'На задній план', () => this.sendToBackSelected());
-      }
-
-      // Font size for text/note
+      // Font family & size for text/note
       const textItems = unlockedObjs.filter((i) => i.data.type === 'text' || i.data.type === 'note');
-      if (textItems.length > 0) {
+      if (textItems.length > 0 && textItems.length === unlocked.length) {
+        const sel = document.createElement('select');
+        sel.className = 'ctx-select';
+        sel.title = 'Вибрати шрифт (включно з прописним)';
+        FONT_PRESETS.forEach((fp) => {
+          const opt = document.createElement('option');
+          opt.value = fp.id;
+          opt.textContent = fp.label;
+          sel.appendChild(opt);
+        });
+        sel.value = textItems[0].data.fontFamily || 'sans';
+        sel.addEventListener('pointerdown', (e) => e.stopPropagation());
+        sel.addEventListener('change', (e) => {
+          e.stopPropagation();
+          const val = sel.value;
+          sel.blur();
+          textItems.forEach((i) => {
+            i.data.fontFamily = val;
+            this.objects.updateObjectEl(i.data);
+          });
+          this.onMutate('font-family', this._collectMutationMeta(textItems));
+        });
+        this.toolbarEl.appendChild(sel);
+
         addBtn('A−', 'Зменшити шрифт', () => {
           textItems.forEach((i) => {
             i.data.fontSize = Math.max(12, (i.data.fontSize || 18) - 2);
             this.objects.updateObjectEl(i.data);
           });
-          this.onMutate('font-size');
+          this.onMutate('font-size', this._collectMutationMeta(textItems));
         });
         addBtn('A+', 'Збільшити шрифт', () => {
           textItems.forEach((i) => {
             i.data.fontSize = Math.min(72, (i.data.fontSize || 18) + 2);
             this.objects.updateObjectEl(i.data);
           });
-          this.onMutate('font-size');
+          this.onMutate('font-size', this._collectMutationMeta(textItems));
         });
       }
 
@@ -798,7 +882,7 @@ export class SelectionManager {
               i.data.color = c.text;
               this.objects.updateObjectEl(i.data);
             });
-            this.onMutate('note-color');
+            this.onMutate('note-color', this._collectMutationMeta(unlocked));
           });
           this.toolbarEl.appendChild(sw);
         });
@@ -822,7 +906,7 @@ export class SelectionManager {
               if (i.kind === 'object') this.objects.updateObjectEl(i.data);
               else this.drawing.updateStrokeEl(i.data);
             });
-            this.onMutate('recolor');
+            this.onMutate('recolor', this._collectMutationMeta(unlocked));
           });
           this.toolbarEl.appendChild(sw);
         });

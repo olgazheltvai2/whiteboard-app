@@ -1,3 +1,12 @@
+/* Optional local Ukrainian school Propysy font (drop fonts/propysy.ttf into repo) */
+@font-face {
+  font-family: "SchoolPropysy";
+  src: url("../fonts/propysy.ttf") format("truetype"),
+       url("../fonts/propysy.woff2") format("woff2"),
+       url("../fonts/propysy.otf") format("opentype");
+  font-display: swap;
+}
+
 /* Theme tokens & canvas backgrounds */
 :root {
   --ui-bg: #12141a;
@@ -25,6 +34,8 @@
   --grid-y: 0px;
   --grid-size: 32px;
   --line-size: 38px;
+  --propysy-w: 34px;
+  --propysy-h: 72px;
 }
 
 * {
@@ -83,4 +94,15 @@ html, body {
 .viewport.pattern-lines {
   background-image: linear-gradient(to bottom, var(--canvas-pattern-strong) 1px, transparent 1px);
   background-size: 100% var(--line-size);
+}
+
+/* Authentic Ukrainian 65-degree slanted notebook pattern (Прописи у косу лінію) */
+.viewport.bg-light.pattern-propysy {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='34' height='72' viewBox='0 0 34 72'%3E%3Cline x1='34' y1='0' x2='0' y2='72' stroke='%238db7e8' stroke-opacity='0.45' stroke-width='0.9'/%3E%3Cline x1='0' y1='24' x2='34' y2='24' stroke='%236c9ed9' stroke-opacity='0.78' stroke-width='1.1'/%3E%3Cline x1='0' y1='48' x2='34' y2='48' stroke='%236c9ed9' stroke-opacity='0.78' stroke-width='1.1'/%3E%3Cline x1='0' y1='71.5' x2='34' y2='71.5' stroke='%239ec0e6' stroke-opacity='0.35' stroke-width='0.7'/%3E%3C/svg%3E");
+  background-size: var(--propysy-w) var(--propysy-h);
+}
+
+.viewport.bg-dark.pattern-propysy {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='34' height='72' viewBox='0 0 34 72'%3E%3Cline x1='34' y1='0' x2='0' y2='72' stroke='%2399b9e6' stroke-opacity='0.14' stroke-width='0.9'/%3E%3Cline x1='0' y1='24' x2='34' y2='24' stroke='%2399b9e6' stroke-opacity='0.28' stroke-width='1.1'/%3E%3Cline x1='0' y1='48' x2='34' y2='48' stroke='%2399b9e6' stroke-opacity='0.28' stroke-width='1.1'/%3E%3Cline x1='0' y1='71.5' x2='34' y2='71.5' stroke='%2399b9e6' stroke-opacity='0.1' stroke-width='0.7'/%3E%3C/svg%3E");
+  background-size: var(--propysy-w) var(--propysy-h);
 }

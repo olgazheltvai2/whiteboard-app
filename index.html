@@ -4,12 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <title>Легка Дошка Уроків</title>
+  <!-- Ukrainian-capable cursive & handwriting fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bad+Script&family=Caveat:wght@500;700&family=Marck+Script&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/theme.css" />
   <link rel="stylesheet" href="css/ui.css" />
 </head>
 <body>
   <div id="app">
-    <!-- Left Sidebar: Boards List -->
+    <!-- Left Sidebar: Boards List (hidden in student mode) -->
     <aside id="sidebar" class="sidebar">
       <div class="sidebar-header">
         <div class="brand">
@@ -29,7 +33,7 @@
 
       <div class="sidebar-footer">
         <button id="btn-open-settings" class="btn btn-ghost full-width">
-          ⚙️ Налаштування GitHub
+          ⚙️ Налаштування (GitHub / Firebase)
         </button>
       </div>
     </aside>
@@ -39,40 +43,82 @@
       <!-- Top Bar -->
       <header class="topbar">
         <div class="topbar-left">
-          <button id="btn-open-sidebar" class="icon-btn" title="Показати список дошок (Tab)">☰</button>
+          <button id="btn-open-sidebar" class="icon-btn teacher-only" title="Показати список дошок (Tab)">☰</button>
           <div class="board-title-wrap">
             <input id="current-board-title" class="board-title-input" type="text" value="Нова дошка" title="Натисніть, щоб змінити назву" />
-            <span id="current-board-folder" class="folder-badge hidden"></span>
+            <span id="current-board-folder" class="folder-badge hidden teacher-only"></span>
+            <span id="student-mode-badge" class="student-badge hidden"></span>
           </div>
         </div>
 
-        <div class="topbar-center">
+        <div class="topbar-center teacher-only">
           <div class="bg-controls" title="Фон полотна">
             <button id="btn-bg-theme" class="chip-btn" title="Темний / Світлий фон полотна">🌑 Темний</button>
             <select id="select-bg-pattern" class="select-compact" title="Розмітка полотна">
               <option value="dots">⠿ Крапки</option>
               <option value="grid">▦ Клітинка</option>
               <option value="lines">▤ Лінійка</option>
+              <option value="propysy">✍️ Прописи (коса)</option>
               <option value="none">⬜ Чистий</option>
             </select>
           </div>
         </div>
 
         <div class="topbar-right">
-          <span id="sync-status" class="sync-status status-local" title="Статус збереження">Локально</span>
-          <button id="btn-save-now" class="btn btn-secondary btn-sm" title="Зберегти зараз (Ctrl+S)">💾 Зберегти</button>
-          <button id="btn-clear-drawings" class="btn btn-danger-soft btn-sm" title="Прибрати всі малюнки, залишивши картинки й текст">🧹 Очистити малюнки</button>
+          <span id="student-perm-pill" class="sync-status status-local hidden"></span>
+          <button id="btn-live-toggle" class="btn btn-live btn-sm teacher-only" title="Запустити спільну роботу з учнем або мінігрупою через Firebase">
+            📡 Спільний урок
+          </button>
+          <span id="sync-status" class="sync-status status-local teacher-only" title="Статус збереження">Локально</span>
+          <button id="btn-save-now" class="btn btn-secondary btn-sm teacher-only" title="Зберегти зараз (Ctrl+S)">💾 Зберегти</button>
+          <button id="btn-clear-drawings" class="btn btn-danger-soft btn-sm teacher-only" title="Прибрати всі малюнки, залишивши картинки й текст">🧹 Очистити малюнки</button>
         </div>
       </header>
 
-      <!-- Canvas Viewport (NO tabindex so it never steals focus from text inputs) -->
+      <!-- Live Session Control Bar (Teacher Only, visible when Live Session is active) -->
+      <div id="live-bar" class="live-bar hidden">
+        <div class="live-bar-group">
+          <span class="live-dot-badge"><span class="live-dot"></span> В ефірі</span>
+          <button id="btn-live-copy-link" class="btn btn-primary btn-sm" title="Скопіювати посилання-запрошення для учнів">🔗 Посилання для учнів</button>
+        </div>
+
+        <div class="live-bar-group">
+          <span class="live-label">Права учнів:</span>
+          <div class="segmented" id="live-perm-group">
+            <button class="seg-btn" data-perm="view" title="Стоп-кран: учні лише дивляться">👁️ Дивитись</button>
+            <button class="seg-btn" data-perm="draw" title="Учні можуть малювати, але не рухають картинки">✏️ Малювати</button>
+            <button class="seg-btn active" data-perm="edit" title="Учні можуть малювати і рухати незаблоковане">🖐️ Усе</button>
+          </div>
+        </div>
+
+        <div class="live-bar-group">
+          <button id="btn-live-call" class="btn btn-secondary btn-sm" title="Миттєво перенести екрани всіх учнів на те місце, куди дивитесь ви">📍 Покликати</button>
+          <button id="btn-live-follow" class="btn btn-secondary btn-sm" title="Прив'язати екрани учнів до вашої камери, щоб ніхто не загубився">🧲 Прив'язати екран</button>
+        </div>
+
+        <div class="live-bar-group live-students-wrap">
+          <button id="btn-live-students" class="btn btn-secondary btn-sm" title="Список підключених учнів та індивідуальний контроль">
+            👥 Учні (<span id="live-students-count">0</span>)
+          </button>
+          <div id="live-students-popover" class="students-popover hidden"></div>
+        </div>
+
+        <div class="live-bar-group">
+          <button id="btn-live-stop" class="btn btn-danger-soft btn-sm" title="Завершити спільний урок і закрити доступ учням">⏹️ Завершити</button>
+        </div>
+      </div>
+
+      <!-- Canvas Viewport -->
       <div id="viewport" class="viewport bg-dark pattern-dots">
         <div id="world" class="world">
+          <!-- Objects and Strokes share #world stacking context so z-index interleaves freely! -->
           <div id="objects-layer" class="objects-layer"></div>
-          <svg id="drawing-layer" class="drawing-layer" xmlns="http://www.w3.org/2000/svg">
-            <g id="strokes-group"></g>
+          <div id="strokes-layer" class="strokes-layer"></div>
+          <svg id="active-drawing-layer" class="active-drawing-layer" xmlns="http://www.w3.org/2000/svg">
             <g id="active-stroke-group"></g>
           </svg>
+          <!-- Live Remote Cursors -->
+          <div id="cursors-layer" class="cursors-layer"></div>
           <!-- Unified Selection Overlay inside World -->
           <div id="selection-layer" class="selection-layer">
             <div id="selection-items-outlines"></div>
@@ -86,11 +132,16 @@
           </div>
         </div>
 
-        <!-- Marquee Selection Rectangle (viewport coordinates) -->
+        <!-- Marquee Selection Rectangle -->
         <div id="marquee-box" class="marquee-box hidden"></div>
 
         <!-- Floating Context Bar for Selected Object(s) / Drawing(s) -->
         <div id="object-toolbar" class="object-toolbar hidden"></div>
+
+        <!-- Student Follow-Camera Notice -->
+        <div id="student-follow-banner" class="student-follow-banner hidden">
+          🧲 Екран синхронізовано з учителем
+        </div>
 
         <!-- Empty hint -->
         <div id="empty-hint" class="empty-hint hidden">
@@ -99,12 +150,23 @@
       </div>
 
       <!-- Bottom Floating Main Toolbar -->
-      <div class="dock-wrap">
+      <div id="dock-wrap" class="dock-wrap">
         <!-- Sub-toolbar for drawing color/width -->
         <div id="draw-options" class="draw-options hidden">
           <div id="color-swatches" class="color-swatches"></div>
           <div class="divider-v"></div>
           <div id="width-swatches" class="width-swatches"></div>
+        </div>
+
+        <!-- Sub-toolbar for Text tool font/color -->
+        <div id="text-options" class="draw-options hidden">
+          <span class="sub-label">Шрифт:</span>
+          <select id="select-default-font" class="select-compact" title="Шрифт для нового тексту">
+            <option value="sans">Друкований</option>
+            <option value="propysy">✍️ Прописний</option>
+            <option value="hand">Рукописний</option>
+            <option value="neat">Зошитовий</option>
+          </select>
         </div>
 
         <div class="toolbar-dock">
@@ -150,24 +212,24 @@
           <button class="tool-btn" data-tool="note" title="Стікер — натисніть і клікніть на дошку (N)">
             <span class="tool-icon">📝</span><span class="tool-label">Стікер</span>
           </button>
-          <button id="btn-upload-image" class="tool-btn" title="Додати картинку з комп'ютера (або Ctrl+V)">
+          <button id="btn-upload-image" class="tool-btn teacher-only" title="Додати картинку з комп'ютера (або Ctrl+V)">
             <span class="tool-icon">🖼️</span><span class="tool-label">Картинка</span>
           </button>
           <input id="image-file-input" type="file" accept="image/*" multiple class="hidden" />
 
-          <div class="divider-v"></div>
+          <div class="divider-v teacher-only"></div>
 
-          <button id="btn-undo" class="tool-btn" title="Скасувати (Ctrl+Z)" disabled>
+          <button id="btn-undo" class="tool-btn teacher-only" title="Скасувати (Ctrl+Z)" disabled>
             <span class="tool-icon">↩️</span><span class="tool-label">Назад</span>
           </button>
-          <button id="btn-redo" class="tool-btn" title="Повернути (Ctrl+Y)" disabled>
+          <button id="btn-redo" class="tool-btn teacher-only" title="Повернути (Ctrl+Y)" disabled>
             <span class="tool-icon">↪️</span><span class="tool-label">Вперед</span>
           </button>
         </div>
       </div>
 
       <!-- Zoom Controls (Bottom Right) -->
-      <div class="zoom-controls">
+      <div id="zoom-controls" class="zoom-controls">
         <button id="btn-zoom-out" class="icon-btn" title="Зменшити">−</button>
         <button id="btn-zoom-reset" class="zoom-readout" title="Скинути масштаб на 100%">100%</button>
         <button id="btn-zoom-in" class="icon-btn" title="Збільшити">+</button>
@@ -176,35 +238,65 @@
     </main>
   </div>
 
-  <!-- Modal: GitHub Settings -->
+  <!-- Modal: Settings (GitHub + Firebase) -->
   <div id="modal-settings" class="modal-backdrop hidden">
     <div class="modal">
       <div class="modal-header">
-        <h2>Підключення до GitHub</h2>
+        <h2>Налаштування підключень</h2>
         <button class="icon-btn modal-close" data-close="modal-settings">✕</button>
       </div>
-      <div class="modal-body">
-        <p class="modal-desc">
-          Токен зберігається <b>тільки у пам'яті цього браузера</b> і нікуди не передається, окрім вашого приватного репозиторію.
-        </p>
-
-        <label class="field-label">Логін GitHub (власник репозиторію)</label>
-        <input id="cfg-owner" class="input" type="text" placeholder="olgazheltvai2" />
-
-        <label class="field-label">Назва приватного репозиторію для даних</label>
-        <input id="cfg-repo" class="input" type="text" placeholder="whiteboard-data" />
-
-        <label class="field-label">Гілка (зазвичай main)</label>
-        <input id="cfg-branch" class="input" type="text" placeholder="main" />
-
-        <label class="field-label">Ключ доступу (Personal Access Token)</label>
-        <input id="cfg-token" class="input" type="password" placeholder="github_pat_..." autocomplete="off" />
-
-        <div id="settings-test-result" class="test-result hidden"></div>
+      <div class="modal-tabs">
+        <button class="modal-tab active" data-tab="tab-github">📦 GitHub (Зберігання)</button>
+        <button class="modal-tab" data-tab="tab-firebase">🔥 Firebase (Спільні уроки)</button>
       </div>
-      <div class="modal-footer">
-        <button id="btn-test-github" class="btn btn-secondary">Перевірити зв'язок</button>
-        <button id="btn-save-settings" class="btn btn-primary">Зберегти і підключити</button>
+
+      <!-- Tab: GitHub -->
+      <div id="tab-github" class="modal-tab-panel">
+        <div class="modal-body">
+          <p class="modal-desc">
+            Токен зберігається <b>тільки у пам'яті цього браузера</b> і ніколи не передається учням.
+          </p>
+
+          <label class="field-label">Логін GitHub (власник репозиторію)</label>
+          <input id="cfg-owner" class="input" type="text" placeholder="olgazheltvai2" />
+
+          <label class="field-label">Назва приватного репозиторію для даних</label>
+          <input id="cfg-repo" class="input" type="text" placeholder="whiteboard-data" />
+
+          <label class="field-label">Гілка (зазвичай main)</label>
+          <input id="cfg-branch" class="input" type="text" placeholder="main" />
+
+          <label class="field-label">Ключ доступу (Personal Access Token)</label>
+          <input id="cfg-token" class="input" type="password" placeholder="github_pat_..." autocomplete="off" />
+
+          <div id="settings-test-result" class="test-result hidden"></div>
+        </div>
+        <div class="modal-footer">
+          <button id="btn-test-github" class="btn btn-secondary">Перевірити GitHub</button>
+          <button id="btn-save-settings" class="btn btn-primary">Зберегти GitHub</button>
+        </div>
+      </div>
+
+      <!-- Tab: Firebase -->
+      <div id="tab-firebase" class="modal-tab-panel hidden">
+        <div class="modal-body">
+          <p class="modal-desc">
+            Потрібен лише для синхронної роботи з учнем або мінігрупою. Вставте посилання на вашу <b>Firebase Realtime Database</b> (або весь блок <code>firebaseConfig</code>).
+          </p>
+
+          <label class="field-label">Посилання Realtime Database (databaseURL)</label>
+          <input id="cfg-fb-url" class="input" type="text" placeholder="https://your-project-default-rtdb.europe-west1.firebasedatabase.app" autocomplete="off" />
+
+          <p class="modal-hint">
+            У Firebase Console → <b>Realtime Database → Rules</b> дозвольте доступ до вузлів <code>rooms/$roomId</code> і <code>_ping</code>.
+          </p>
+
+          <div id="fb-test-result" class="test-result hidden"></div>
+        </div>
+        <div class="modal-footer">
+          <button id="btn-test-firebase" class="btn btn-secondary">Перевірити зв'язок</button>
+          <button id="btn-save-firebase" class="btn btn-primary">Зберегти Firebase</button>
+        </div>
       </div>
     </div>
   </div>
@@ -227,6 +319,34 @@
       <div class="modal-footer">
         <button class="btn btn-ghost modal-close" data-close="modal-board">Скасувати</button>
         <button id="btn-confirm-board" class="btn btn-primary">Зберегти</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Student Join Prompt -->
+  <div id="modal-student-join" class="modal-backdrop hidden">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h2>👋 Приєднатися до уроку</h2>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">Введи своє ім'я, щоб учитель бачив тебе на дошці:</p>
+        <input id="input-student-name" class="input" type="text" placeholder="Наприклад: Софія" maxlength="24" />
+      </div>
+      <div class="modal-footer">
+        <button id="btn-student-enter" class="btn btn-primary full-width">Увійти на дошку</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Overlay: Session Ended (for student) -->
+  <div id="modal-session-ended" class="modal-backdrop hidden">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h2>Урок завершено</h2>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">Учитель закрив спільну дошку. Можна закривати цю вкладку!</p>
       </div>
     </div>
   </div>

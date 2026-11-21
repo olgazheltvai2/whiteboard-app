@@ -1,4 +1,4 @@
-// Vector SVG drawing layer: Pen, Highlighter, Shapes, Eraser + Select/Move/Scale support
+// Vector SVG drawing layer with per-stroke zIndex (interleaves cleanly above/below images!)
 
 import { uid } from './config.js';
 
@@ -35,11 +35,12 @@ function distToSegment(px, py, x1, y1, x2, y2) {
 }
 
 export class DrawingManager {
-  constructor({ strokesGroup, activeGroup, viewport, onMutate }) {
-    this.strokesGroup = strokesGroup;
+  constructor({ strokesLayer, activeGroup, viewport, onMutate, getNextZIndex }) {
+    this.strokesLayer = strokesLayer;
     this.activeGroup = activeGroup;
     this.viewport = viewport;
     this.onMutate = onMutate;
+    this.getNextZIndex = getNextZIndex || (() => this._localMaxZ() + 1);
 
     this.strokes = [];
     this.elMap = new Map();
@@ -48,11 +49,23 @@ export class DrawingManager {
 
     this.currentStroke = null;
     this.isErasing = false;
-    this.erasedAny = false;
+    this.erasedIds = [];
   }
 
-  setStrokes(list) {
-    this.strokes = Array.isArray(list) ? list : [];
+  _localMaxZ() {
+    if (!this.strokes.length) return 0;
+    return Math.max(...this.strokes.map((s) => s.zIndex ?? 1));
+  }
+
+  setStrokes(list, defaultBaseZ = 100) {
+    const raw = Array.isArray(list) ? list : [];
+    // Ensure legacy strokes from v1/v2 have explicit zIndex above existing objects
+    this.strokes = raw.map((s, idx) => {
+      if (typeof s.zIndex !== 'number') {
+        s.zIndex = defaultBaseZ + idx + 1;
+      }
+      return s;
+    });
     this.renderAll();
   }
 
@@ -74,12 +87,9 @@ export class DrawingManager {
 
   addRawStrokes(list) {
     for (const s of list) {
+      if (typeof s.zIndex !== 'number') s.zIndex = this.getNextZIndex();
       this.strokes.push(s);
-      const el = this._createSvgElement(s);
-      if (el) {
-        this.strokesGroup.appendChild(el);
-        this.elMap.set(s.id, el);
-      }
+      this._mountStrokeWrapper(s);
     }
   }
 
@@ -100,16 +110,45 @@ export class DrawingManager {
 
   clearAllDrawings() {
     if (!this.strokes.length) return false;
+    const deletedStrokeIds = this.strokes.map((s) => s.id);
     this.strokes = [];
     this.renderAll();
-    this.onMutate('clear-drawings');
+    this.onMutate('clear-drawings', { deletedStrokeIds });
     return true;
+  }
+
+  // Flicker-free remote sync from Firebase
+  applyRemoteMap(remoteMap, { skipIds = new Set() } = {}) {
+    const incomingIds = new Set(Object.keys(remoteMap || {}));
+
+    for (const s of [...this.strokes]) {
+      if (!incomingIds.has(s.id) && !skipIds.has(s.id)) {
+        this.removeIds(new Set([s.id]));
+      }
+    }
+
+    for (const [id, remoteStroke] of Object.entries(remoteMap || {})) {
+      if (!remoteStroke || !remoteStroke.id) continue;
+      if (skipIds.has(id)) continue;
+
+      const existing = this.getById(id);
+      if (existing) {
+        Object.assign(existing, remoteStroke);
+        if (!remoteStroke.groupId) delete existing.groupId;
+        this.updateStrokeEl(existing);
+      } else {
+        const copy = JSON.parse(JSON.stringify(remoteStroke));
+        if (typeof copy.zIndex !== 'number') copy.zIndex = this.getNextZIndex();
+        this.strokes.push(copy);
+        this._mountStrokeWrapper(copy);
+      }
+    }
   }
 
   startPointer(tool, worldPt) {
     if (tool === 'eraser') {
       this.isErasing = true;
-      this.erasedAny = false;
+      this.erasedIds = [];
       this._eraseAt(worldPt.x, worldPt.y);
       return;
     }
@@ -124,6 +163,7 @@ export class DrawingManager {
         color: this.color,
         width: tool === 'highlighter' ? Math.max(18, this.width * 3.5) : this.width,
         opacity: tool === 'highlighter' ? 0.36 : 1,
+        zIndex: this.getNextZIndex(),
         locked: false,
         points: [[x, y]]
       };
@@ -134,6 +174,7 @@ export class DrawingManager {
         color: this.color,
         width: this.width,
         opacity: 1,
+        zIndex: this.getNextZIndex(),
         locked: false,
         x1: x,
         y1: y,
@@ -173,9 +214,10 @@ export class DrawingManager {
   endPointer() {
     if (this.isErasing) {
       this.isErasing = false;
-      if (this.erasedAny) {
-        this.erasedAny = false;
-        this.onMutate('erase');
+      if (this.erasedIds.length > 0) {
+        const deletedStrokeIds = [...this.erasedIds];
+        this.erasedIds = [];
+        this.onMutate('erase', { deletedStrokeIds });
       }
       return;
     }
@@ -185,7 +227,6 @@ export class DrawingManager {
     this.currentStroke = null;
     this.activeGroup.innerHTML = '';
 
-    // Ignore accidental zero-size shapes
     if (!finished.points) {
       if (Math.hypot(finished.x2 - finished.x1, finished.y2 - finished.y1) < 3) {
         return;
@@ -193,37 +234,34 @@ export class DrawingManager {
     }
 
     this.strokes.push(finished);
-    const el = this._createSvgElement(finished);
-    if (el) {
-      this.strokesGroup.appendChild(el);
-      this.elMap.set(finished.id, el);
-    }
-    this.onMutate('draw');
+    this._mountStrokeWrapper(finished);
+    this.onMutate('draw', { changedStrokeIds: [finished.id] });
   }
 
   _eraseAt(wx, wy) {
     const radius = Math.max(12, 16 / this.viewport.zoom);
-    let removed = false;
+    const toRemove = new Set();
 
-    this.strokes = this.strokes.filter((s) => {
-      if (s.locked) return true;
-      const hit = this.hitTestStroke(s, wx, wy, radius);
-      if (hit) removed = true;
-      return !hit;
-    });
+    for (const s of this.strokes) {
+      if (s.locked) continue;
+      if (this.hitTestStroke(s, wx, wy, radius)) {
+        toRemove.add(s.id);
+      }
+    }
 
-    if (removed) {
-      this.erasedAny = true;
-      this.renderAll();
+    if (toRemove.size > 0) {
+      this.removeIds(toRemove);
+      this.erasedIds.push(...toRemove);
     }
   }
 
   hitTest(wx, wy) {
     const radius = Math.max(8, 10 / this.viewport.zoom);
-    // Search from topmost stroke backward
-    for (let i = this.strokes.length - 1; i >= 0; i--) {
-      if (this.hitTestStroke(this.strokes[i], wx, wy, radius)) {
-        return this.strokes[i];
+    // Check from highest zIndex downward
+    const sorted = [...this.strokes].sort((a, b) => (b.zIndex ?? 0) - (a.zIndex ?? 0));
+    for (const s of sorted) {
+      if (this.hitTestStroke(s, wx, wy, radius)) {
+        return s;
       }
     }
     return null;
@@ -274,7 +312,9 @@ export class DrawingManager {
   }
 
   getStrokeBounds(s) {
-    const pad = Math.max(6, (s.width || 4) / 2 + 2);
+    const basePad = s.kind === 'arrow'
+      ? Math.max(14, (s.width || 4) * 3.4)
+      : Math.max(6, (s.width || 4) / 2 + 2);
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     if (s.points) {
       for (const [x, y] of s.points) {
@@ -290,10 +330,10 @@ export class DrawingManager {
       maxY = Math.max(s.y1, s.y2);
     }
     return {
-      minX: minX - pad,
-      minY: minY - pad,
-      maxX: maxX + pad,
-      maxY: maxY + pad
+      minX: minX - basePad,
+      minY: minY - basePad,
+      maxX: maxX + basePad,
+      maxY: maxY + basePad
     };
   }
 
@@ -345,14 +385,39 @@ export class DrawingManager {
     }
   }
 
+  _buildStrokeWrapper(s) {
+    const b = this.getStrokeBounds(s);
+    const w = Math.max(4, b.maxX - b.minX);
+    const h = Math.max(4, b.maxY - b.minY);
+
+    const svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'stroke-item');
+    svg.setAttribute('viewBox', `${b.minX} ${b.minY} ${w} ${h}`);
+    svg.dataset.id = s.id;
+    svg.style.left = `${b.minX}px`;
+    svg.style.top = `${b.minY}px`;
+    svg.style.width = `${w}px`;
+    svg.style.height = `${h}px`;
+    svg.style.zIndex = String(s.zIndex ?? 1);
+
+    const shape = this._createSvgShape(s);
+    if (shape) svg.appendChild(shape);
+    return svg;
+  }
+
+  _mountStrokeWrapper(s) {
+    const svg = this._buildStrokeWrapper(s);
+    this.strokesLayer.appendChild(svg);
+    this.elMap.set(s.id, svg);
+  }
+
   updateStrokeEl(s) {
     const oldEl = this.elMap.get(s.id);
-    const newEl = this._createSvgElement(s);
-    if (!newEl) return;
+    const newEl = this._buildStrokeWrapper(s);
     if (oldEl && oldEl.parentNode) {
       oldEl.replaceWith(newEl);
     } else {
-      this.strokesGroup.appendChild(newEl);
+      this.strokesLayer.appendChild(newEl);
     }
     this.elMap.set(s.id, newEl);
   }
@@ -360,25 +425,23 @@ export class DrawingManager {
   _renderActive() {
     this.activeGroup.innerHTML = '';
     if (!this.currentStroke) return;
-    const el = this._createSvgElement(this.currentStroke);
+    const el = this._createSvgShape(this.currentStroke);
     if (el) this.activeGroup.appendChild(el);
   }
 
   renderAll() {
-    this.strokesGroup.innerHTML = '';
+    this.strokesLayer.innerHTML = '';
     this.elMap.clear();
     const frag = document.createDocumentFragment();
     for (const s of this.strokes) {
-      const el = this._createSvgElement(s);
-      if (el) {
-        frag.appendChild(el);
-        this.elMap.set(s.id, el);
-      }
+      const svg = this._buildStrokeWrapper(s);
+      frag.appendChild(svg);
+      this.elMap.set(s.id, svg);
     }
-    this.strokesGroup.appendChild(frag);
+    this.strokesLayer.appendChild(frag);
   }
 
-  _createSvgElement(s) {
+  _createSvgShape(s) {
     if (s.points) {
       const path = document.createElementNS(SVG_NS, 'path');
       path.setAttribute('d', buildSmoothPath(s.points));

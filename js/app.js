@@ -1,11 +1,14 @@
-// Main application controller: wires all modules, hotkeys, copy/paste & autosave
+// Main application controller: wires modules, Live Firebase collaboration, fonts & hotkeys
 
 import {
   CLIPBOARD_MARKER_PREFIX,
   DRAW_COLORS,
   DRAW_WIDTHS,
   STORAGE_KEYS,
+  isFirebaseConfigured,
+  loadFirebaseConfig,
   loadGitHubConfig,
+  saveFirebaseConfig,
   saveGitHubConfig
 } from './config.js';
 import { StorageService } from './storage.js';
@@ -15,15 +18,18 @@ import { ObjectsManager } from './objects.js';
 import { DrawingManager } from './drawing.js';
 import { SelectionManager } from './selection.js';
 import { BoardsManager } from './boards.js';
+import { LiveSessionManager } from './live.js';
 
 const $ = (id) => document.getElementById(id);
 
 class WhiteboardApp {
   constructor() {
     this.ghConfig = loadGitHubConfig();
+    this.fbConfig = loadFirebaseConfig();
     this.storage = new StorageService(this.ghConfig);
 
     this.currentTool = 'select';
+    this.defaultFont = localStorage.getItem(STORAGE_KEYS.DEFAULT_FONT) || 'sans';
     this.currentBoard = null;
     this.isDirty = false;
     this.isSaving = false;
@@ -31,10 +37,47 @@ class WhiteboardApp {
     this.modalBoardMode = 'create';
     this.modalBoardEditId = null;
 
+    // Detect if opened via student invite link (?room=...&db=...)
+    const params = new URLSearchParams(window.location.search);
+    this.inviteRoomId = params.get('room');
+    this.inviteDbUrl = params.get('db');
+    this.isStudentMode = Boolean(this.inviteRoomId && this.inviteDbUrl);
+    this.studentPerm = 'edit';
+
     this._initModules();
     this._initUI();
     this._bindEvents();
-    this._boot();
+
+    if (this.isStudentMode) {
+      this._bootStudent();
+    } else {
+      this._bootTeacher();
+    }
+  }
+
+  // Unified Z-index across BOTH objects & drawings
+  getNextZIndex() {
+    const objZ = this.objects.getObjects().map((o) => o.zIndex ?? 0);
+    const strZ = this.drawing.getStrokes().map((s) => s.zIndex ?? 0);
+    const all = [...objZ, ...strZ];
+    return all.length ? Math.max(...all) + 1 : 1;
+  }
+
+  getMinZIndex() {
+    const objZ = this.objects.getObjects().map((o) => o.zIndex ?? 0);
+    const strZ = this.drawing.getStrokes().map((s) => s.zIndex ?? 0);
+    const all = [...objZ, ...strZ];
+    return all.length ? Math.min(...all) - 1 : 0;
+  }
+
+  _canDraw() {
+    if (!this.isStudentMode) return true;
+    return this.studentPerm === 'draw' || this.studentPerm === 'edit';
+  }
+
+  _canEditObjects() {
+    if (!this.isStudentMode) return true;
+    return this.studentPerm === 'edit';
   }
 
   _initModules() {
@@ -43,6 +86,12 @@ class WhiteboardApp {
       $('world'),
       (zoom) => {
         $('btn-zoom-reset').textContent = `${Math.round(zoom * 100)}%`;
+      },
+      () => {
+        // Teacher camera broadcast while magnet-follow is enabled
+        if (this.live && this.live.isActive() && this.live.isTeacher() && this.live.followCamera) {
+          this.live.pushCamera(this.viewport.getCenterWorld(), this.viewport.zoom, false);
+        }
       }
     );
 
@@ -55,17 +104,19 @@ class WhiteboardApp {
       layerEl: $('objects-layer'),
       viewport: this.viewport,
       storage: this.storage,
-      onMutate: () => this._onBoardMutated(),
+      getNextZIndex: () => this.getNextZIndex(),
+      onMutate: (reason, meta) => this._onBoardMutated(reason, meta),
       onEditStateChange: () => {
         if (this.selection) this.selection.render();
       }
     });
 
     this.drawing = new DrawingManager({
-      strokesGroup: $('strokes-group'),
+      strokesLayer: $('strokes-layer'),
       activeGroup: $('active-stroke-group'),
       viewport: this.viewport,
-      onMutate: () => this._onBoardMutated()
+      getNextZIndex: () => this.getNextZIndex(),
+      onMutate: (reason, meta) => this._onBoardMutated(reason, meta)
     });
 
     this.selection = new SelectionManager({
@@ -77,7 +128,11 @@ class WhiteboardApp {
       viewport: this.viewport,
       objects: this.objects,
       drawing: this.drawing,
-      onMutate: () => this._onBoardMutated(),
+      isTeacher: () => !this.isStudentMode,
+      canEditObjects: () => this._canEditObjects(),
+      getNextZIndex: () => this.getNextZIndex(),
+      getMinZIndex: () => this.getMinZIndex(),
+      onMutate: (reason, meta) => this._onBoardMutated(reason, meta),
       onToast: (msg) => this.toast(msg)
     });
 
@@ -90,9 +145,28 @@ class WhiteboardApp {
       onSelectBoard: (id) => this.openBoard(id),
       onToast: (msg) => this.toast(msg)
     });
+
+    this.live = new LiveSessionManager({
+      cursorsLayerEl: $('cursors-layer'),
+      onRemoteObjects: (remoteMap) => this._applyRemoteObjects(remoteMap),
+      onRemoteStrokes: (remoteMap) => this._applyRemoteStrokes(remoteMap),
+      onRemoteMeta: (meta, effPerm) => this._applyRemoteMeta(meta, effPerm),
+      onRemoteCamera: (cam) => {
+        this.viewport.setCenterWorld(cam.cx, cam.cy, cam.zoom || 1, false);
+      },
+      onStudentsChange: (students) => this._renderStudentsList(students),
+      onSessionEnded: () => {
+        $('modal-session-ended').classList.remove('hidden');
+      },
+      onToast: (msg) => this.toast(msg)
+    });
+
+    this.storage.setRemoteAssetResolver((path) => this.live.resolveRoomAsset(path));
   }
 
   _initUI() {
+    $('select-default-font').value = this.defaultFont;
+
     const swatchesEl = $('color-swatches');
     DRAW_COLORS.forEach((col) => {
       const btn = document.createElement('button');
@@ -143,6 +217,12 @@ class WhiteboardApp {
       });
     });
 
+    $('select-default-font').addEventListener('change', (e) => {
+      this.defaultFont = e.target.value;
+      localStorage.setItem(STORAGE_KEYS.DEFAULT_FONT, this.defaultFont);
+      e.target.blur();
+    });
+
     $('btn-undo').addEventListener('click', (e) => { e.currentTarget.blur(); this.undo(); });
     $('btn-redo').addEventListener('click', (e) => { e.currentTarget.blur(); this.redo(); });
 
@@ -165,26 +245,29 @@ class WhiteboardApp {
 
     $('btn-bg-theme').addEventListener('click', (e) => {
       e.currentTarget.blur();
-      if (!this.currentBoard) return;
+      if (!this.currentBoard || this.isStudentMode) return;
       this.currentBoard.bgTheme = this.currentBoard.bgTheme === 'light' ? 'dark' : 'light';
       this._applyBoardBgUI();
+      this.live.syncBoardMeta({ bgTheme: this.currentBoard.bgTheme });
       this._markDirty();
     });
 
     $('select-bg-pattern').addEventListener('change', (e) => {
       e.currentTarget.blur();
-      if (!this.currentBoard) return;
+      if (!this.currentBoard || this.isStudentMode) return;
       this.currentBoard.bgPattern = e.target.value;
       this._applyBoardBgUI();
+      this.live.syncBoardMeta({ bgPattern: this.currentBoard.bgPattern });
       this._markDirty();
     });
 
     $('current-board-title').addEventListener('change', async (e) => {
-      if (!this.currentBoard) return;
+      if (!this.currentBoard || this.isStudentMode) return;
       const val = e.target.value.trim() || 'Без назви';
       this.currentBoard.title = val;
       e.target.value = val;
       await this.boards.updateBoardMeta(this.currentBoard.id, { title: val });
+      this.live.syncBoardMeta({ title: val });
       this._markDirty();
     });
 
@@ -197,6 +280,55 @@ class WhiteboardApp {
       }
     });
 
+    // Live Session Teacher Controls
+    $('btn-live-toggle').addEventListener('click', (e) => {
+      e.currentTarget.blur();
+      this._toggleLiveSession();
+    });
+    $('btn-live-copy-link').addEventListener('click', (e) => {
+      e.currentTarget.blur();
+      this._copyInviteLink();
+    });
+    $('live-perm-group').querySelectorAll('.seg-btn').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        btn.blur();
+        const perm = btn.dataset.perm;
+        $('live-perm-group').querySelectorAll('.seg-btn').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+        await this.live.setGlobalPermission(perm);
+        const labels = { view: '👁️ Учні лише дивляться', draw: '✏️ Учні можуть малювати', edit: '🖐️ Повний доступ для учнів' };
+        this.toast(labels[perm]);
+      });
+    });
+    $('btn-live-call').addEventListener('click', async (e) => {
+      e.currentTarget.blur();
+      await this.live.pushCamera(this.viewport.getCenterWorld(), this.viewport.zoom, true);
+      this.toast('📍 Екрани учнів перенесено до вас');
+    });
+    $('btn-live-follow').addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      btn.blur();
+      const next = !this.live.followCamera;
+      btn.classList.toggle('follow-active', next);
+      await this.live.setFollowCamera(next, this.viewport.getCenterWorld(), this.viewport.zoom);
+      this.toast(next ? '🧲 Екрани учнів прив’язано до вашого' : 'Екрани учнів відв’язано');
+    });
+    $('btn-live-students').addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.currentTarget.blur();
+      $('live-students-popover').classList.toggle('hidden');
+    });
+    window.addEventListener('click', (e) => {
+      if (!e.target.closest('.live-students-wrap')) {
+        $('live-students-popover').classList.add('hidden');
+      }
+    });
+    $('btn-live-stop').addEventListener('click', (e) => {
+      e.currentTarget.blur();
+      this._stopLiveSession();
+    });
+
+    // Boards modal
     $('btn-new-board').addEventListener('click', () => this._openBoardModal('create'));
     window.addEventListener('open-board-modal', (e) => {
       this._openBoardModal(e.detail.mode, e.detail.board);
@@ -206,9 +338,21 @@ class WhiteboardApp {
       if (e.key === 'Enter') this._confirmBoardModal();
     });
 
-    $('btn-open-settings').addEventListener('click', () => this._openSettingsModal());
+    // Settings modal + Tabs (GitHub / Firebase)
+    $('btn-open-settings').addEventListener('click', () => this._openSettingsModal('tab-github'));
+    document.querySelectorAll('.modal-tab').forEach((tab) => {
+      tab.addEventListener('click', () => this._switchSettingsTab(tab.dataset.tab));
+    });
     $('btn-test-github').addEventListener('click', () => this._testGitHubFromModal());
     $('btn-save-settings').addEventListener('click', () => this._saveSettingsFromModal());
+    $('btn-test-firebase').addEventListener('click', () => this._testFirebaseFromModal());
+    $('btn-save-firebase').addEventListener('click', () => this._saveFirebaseFromModal());
+
+    // Student Join Modal
+    $('btn-student-enter').addEventListener('click', () => this._enterStudentRoom());
+    $('input-student-name').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') this._enterStudentRoom();
+    });
 
     document.querySelectorAll('.modal-close').forEach((btn) => {
       btn.addEventListener('click', () => $(btn.dataset.close).classList.add('hidden'));
@@ -220,10 +364,11 @@ class WhiteboardApp {
     window.addEventListener('pointermove', (e) => this._onViewportPointerMove(e));
     window.addEventListener('pointerup', () => this._onViewportPointerUp());
 
-    // Drag & Drop images onto viewport
+    // Drag & Drop images (Teacher only)
     vp.addEventListener('dragover', (e) => e.preventDefault());
     vp.addEventListener('drop', async (e) => {
       e.preventDefault();
+      if (this.isStudentMode) return;
       const files = [...(e.dataTransfer?.files || [])].filter((f) => f.type.startsWith('image/'));
       const pt = this.viewport.screenToWorld(e.clientX, e.clientY);
       for (const f of files) {
@@ -231,10 +376,10 @@ class WhiteboardApp {
       }
     });
 
-    // Native Copy / Cut / Paste for board items + external images/text
+    // Native Copy / Cut / Paste
     window.addEventListener('copy', (e) => {
       if (this._isTypingInInput(document.activeElement) || this.objects.isEditing()) return;
-      if (this.selection.selectedIds.size > 0) {
+      if (this._canEditObjects() && this.selection.selectedIds.size > 0) {
         this._copyHandled = true;
         this.selection.copySelected(e);
       }
@@ -242,7 +387,7 @@ class WhiteboardApp {
 
     window.addEventListener('cut', (e) => {
       if (this._isTypingInInput(document.activeElement) || this.objects.isEditing()) return;
-      if (this.selection.selectedIds.size > 0) {
+      if (this._canEditObjects() && this.selection.selectedIds.size > 0) {
         this._cutHandled = true;
         this.selection.cutSelected(e);
       }
@@ -250,11 +395,12 @@ class WhiteboardApp {
 
     window.addEventListener('paste', async (e) => {
       if (this._isTypingInInput(document.activeElement) || this.objects.isEditing()) return;
+      if (!this._canEditObjects()) return;
       this._pasteHandled = true;
 
       const items = [...(e.clipboardData?.items || [])];
       const imgItem = items.find((it) => it.type.startsWith('image/'));
-      if (imgItem) {
+      if (imgItem && !this.isStudentMode) {
         e.preventDefault();
         const file = imgItem.getAsFile();
         if (file) await this._handleImageInsert(file);
@@ -271,7 +417,7 @@ class WhiteboardApp {
       if (plain.trim()) {
         e.preventDefault();
         const defColor = this.currentBoard?.bgTheme === 'light' ? '#18202c' : '#f3f5f9';
-        const obj = this.objects.addTextAt(this.viewport.getCenterWorld(), defColor, plain.trim());
+        const obj = this.objects.addTextAt(this.viewport.getCenterWorld(), defColor, plain.trim(), this.defaultFont);
         this.setTool('select', { keepSelection: true });
         this.selection.selectOnly([obj.id]);
         this.toast('Текст вставлено на дошку');
@@ -284,7 +430,6 @@ class WhiteboardApp {
       }
     });
 
-    // Keyboard Shortcuts
     window.addEventListener('keydown', (e) => this._onKeyDown(e));
     window.addEventListener('keyup', (e) => {
       if (e.code === 'Space') {
@@ -294,14 +439,16 @@ class WhiteboardApp {
     });
 
     window.addEventListener('beforeunload', (e) => {
-      if (this.isDirty || this.isSaving) {
+      if (!this.isStudentMode && (this.isDirty || this.isSaving)) {
         e.preventDefault();
         e.returnValue = '';
       }
     });
   }
 
-  async _boot() {
+  // --- BOOT MODES ---
+
+  async _bootTeacher() {
     this.setStatus(this.storage.isCloudReady() ? 'saving' : 'local',
       this.storage.isCloudReady() ? 'Завантаження...' : 'Локальний режим');
 
@@ -316,17 +463,261 @@ class WhiteboardApp {
         await this.openBoard(target);
       }
       if (!this.storage.isCloudReady()) {
-        this._openSettingsModal();
+        this._openSettingsModal('tab-github');
       }
     } catch (err) {
       console.error(err);
       this.setStatus('error', 'Помилка GitHub');
       this.toast(`Помилка підключення: ${err.message}`);
-      this._openSettingsModal();
+      this._openSettingsModal('tab-github');
     }
   }
 
+  _bootStudent() {
+    document.body.classList.add('student-mode');
+    $('current-board-title').readOnly = true;
+    $('student-mode-badge').classList.remove('hidden');
+    $('student-perm-pill').classList.remove('hidden');
+
+    const savedName = sessionStorage.getItem('wb_student_name') || '';
+    $('input-student-name').value = savedName;
+    $('modal-student-join').classList.remove('hidden');
+    setTimeout(() => $('input-student-name').focus(), 60);
+  }
+
+  async _enterStudentRoom() {
+    const name = $('input-student-name').value.trim() || 'Учень';
+    sessionStorage.setItem('wb_student_name', name);
+    $('btn-student-enter').disabled = true;
+    $('btn-student-enter').textContent = 'Підключення...';
+
+    try {
+      const meta = await this.live.joinRoom({
+        databaseURL: this.inviteDbUrl,
+        roomId: this.inviteRoomId,
+        studentName: name
+      });
+      $('modal-student-join').classList.add('hidden');
+      $('student-mode-badge').textContent = `👤 ${name}`;
+      this.currentBoard = {
+        id: this.inviteRoomId,
+        title: meta.boardTitle || 'Урок',
+        bgTheme: meta.bgTheme || 'dark',
+        bgPattern: meta.bgPattern || 'dots'
+      };
+      $('current-board-title').value = this.currentBoard.title;
+      this._applyBoardBgUI();
+      this.toast('Ти на дошці уроку!');
+    } catch (err) {
+      alert(err.message);
+      $('btn-student-enter').disabled = false;
+      $('btn-student-enter').textContent = 'Увійти на дошку';
+    }
+  }
+
+  // --- LIVE SESSION HOSTING (TEACHER) ---
+
+  async _toggleLiveSession() {
+    if (this.live.isActive()) {
+      this._copyInviteLink();
+      return;
+    }
+    if (!isFirebaseConfigured(this.fbConfig)) {
+      this.toast('Спочатку вкажіть посилання Firebase Realtime Database');
+      this._openSettingsModal('tab-firebase');
+      return;
+    }
+    if (!this.currentBoard) return;
+
+    const btn = $('btn-live-toggle');
+    btn.disabled = true;
+    btn.textContent = '📡 Запуск...';
+
+    try {
+      await this.live.startHosting({
+        databaseURL: this.fbConfig.databaseURL,
+        board: {
+          ...this.currentBoard,
+          objects: this.objects.getObjects(),
+          strokes: this.drawing.getStrokes()
+        },
+        storage: this.storage,
+        centerWorld: this.viewport.getCenterWorld(),
+        zoom: this.viewport.zoom
+      });
+
+      $('live-bar').classList.remove('hidden');
+      btn.classList.add('is-live');
+      btn.textContent = '📡 В ефірі';
+      $('btn-live-follow').classList.remove('follow-active');
+      $('live-perm-group').querySelectorAll('.seg-btn').forEach((b) => {
+        b.classList.toggle('active', b.dataset.perm === 'edit');
+      });
+      this._copyInviteLink();
+    } catch (err) {
+      console.error(err);
+      this.toast(`Не вдалося запустити урок: ${err.message}`);
+      btn.textContent = '📡 Спільний урок';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async _stopLiveSession() {
+    await this.live.stopHosting();
+    $('live-bar').classList.add('hidden');
+    const btn = $('btn-live-toggle');
+    btn.classList.remove('is-live');
+    btn.textContent = '📡 Спільний урок';
+    this.toast('Спільний урок завершено');
+  }
+
+  _copyInviteLink() {
+    const link = this.live.getInviteUrl();
+    if (!link) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(link).then(() => {
+        this.toast('🔗 Посилання для учнів скопійовано! Надішліть його в чат Zoom.');
+      }).catch(() => {
+        prompt('Скопіюйте посилання для учнів:', link);
+      });
+    } else {
+      prompt('Скопіюйте посилання для учнів:', link);
+    }
+  }
+
+  _renderStudentsList(studentsMap) {
+    const entries = Object.entries(studentsMap || {});
+    $('live-students-count').textContent = String(entries.length);
+
+    const pop = $('live-students-popover');
+    pop.innerHTML = '';
+
+    if (!entries.length) {
+      const empty = document.createElement('div');
+      empty.style.cssText = 'padding: 8px; color: var(--ui-text-muted); font-size: 12px; text-align: center;';
+      empty.textContent = 'Поки ніхто не підключився. Надішліть посилання учням.';
+      pop.appendChild(empty);
+      return;
+    }
+
+    for (const [id, stu] of entries) {
+      const row = document.createElement('div');
+      row.className = 'student-row';
+
+      const nameWrap = document.createElement('div');
+      nameWrap.className = 'student-row-name';
+      const dot = document.createElement('span');
+      dot.className = 'student-color-dot';
+      dot.style.background = stu.color || '#5b8def';
+      const txt = document.createElement('span');
+      txt.textContent = stu.name || 'Учень';
+      nameWrap.append(dot, txt);
+
+      const muted = stu.permOverride === 'view';
+      const btnMute = document.createElement('button');
+      btnMute.className = `ctx-btn ${muted ? 'active' : ''}`;
+      btnMute.textContent = muted ? '🔇 Повернути' : '👁️ Забрати права';
+      btnMute.title = muted ? 'Повернути загальні права цьому учню' : 'Вимкнути керування лише цьому учню';
+      btnMute.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.live.setStudentOverride(id, muted ? null : 'view');
+      });
+
+      row.append(nameWrap, btnMute);
+      pop.appendChild(row);
+    }
+  }
+
+  // --- REMOTE SYNC HANDLERS ---
+
+  _applyRemoteObjects(remoteMap) {
+    const skipIds = this.selection.getActiveInteractionIds();
+    this.objects.applyRemoteMap(remoteMap, { skipIds, isTeacher: !this.isStudentMode });
+    this.selection.pruneMissing();
+    this._updateEmptyHint();
+    if (!this.isStudentMode && this.live.isActive()) {
+      this._markDirty();
+    }
+  }
+
+  _applyRemoteStrokes(remoteMap) {
+    const skipIds = this.selection.getActiveInteractionIds();
+    this.drawing.applyRemoteMap(remoteMap, { skipIds });
+    this.selection.pruneMissing();
+    this._updateEmptyHint();
+    if (!this.isStudentMode && this.live.isActive()) {
+      this._markDirty();
+    }
+  }
+
+  _applyRemoteMeta(meta, effPerm) {
+    if (!this.isStudentMode) return;
+    if (this.currentBoard) {
+      if (meta.boardTitle) {
+        this.currentBoard.title = meta.boardTitle;
+        $('current-board-title').value = meta.boardTitle;
+      }
+      if (meta.bgTheme) this.currentBoard.bgTheme = meta.bgTheme;
+      if (meta.bgPattern) this.currentBoard.bgPattern = meta.bgPattern;
+      this._applyBoardBgUI();
+    }
+
+    this.studentPerm = effPerm;
+    const follow = Boolean(meta.followCamera);
+    this.viewport.setCameraLocked(follow);
+    $('student-follow-banner').classList.toggle('hidden', !follow);
+    $('zoom-controls').classList.toggle('hidden', follow);
+
+    // Update permission indicator pill
+    const pill = $('student-perm-pill');
+    const pillMap = {
+      view: { text: '👁️ Тільки перегляд', cls: 'status-error' },
+      draw: { text: '✏️ Тільки малювання', cls: 'status-dirty' },
+      edit: { text: '🖐️ Можна малювати і рухати', cls: 'status-saved' }
+    };
+    const info = pillMap[effPerm] || pillMap.edit;
+    pill.className = `sync-status ${info.cls}`;
+    pill.textContent = info.text;
+
+    // Enforce tool availability for student
+    const dock = $('dock-wrap');
+    if (effPerm === 'view') {
+      this.selection.clear();
+      this.objects.stopEditing();
+      this.setTool('pan');
+      dock.classList.toggle('hidden', follow);
+    } else {
+      dock.classList.remove('hidden');
+    }
+
+    document.querySelectorAll('.tool-btn[data-tool]').forEach((btn) => {
+      const t = btn.dataset.tool;
+      let allow = true;
+      if (effPerm === 'view') {
+        allow = t === 'pan' && !follow;
+      } else if (effPerm === 'draw') {
+        allow = ['pen', 'highlighter', 'eraser', 'line', 'arrow', 'rect', 'ellipse'].includes(t) || (t === 'pan' && !follow);
+      } else {
+        allow = !(t === 'pan' && follow);
+      }
+      btn.classList.toggle('perm-hidden', !allow);
+    });
+
+    if (effPerm === 'draw' && ['select', 'text', 'note'].includes(this.currentTool)) {
+      this.selection.clear();
+      this.objects.stopEditing();
+      this.setTool('pen');
+    }
+    this.selection.render();
+  }
+
+  // --- BOARD OPEN / SAVE / HISTORY ---
+
   async openBoard(boardId, preloadedData = null) {
+    if (this.live.isActive() && this.live.isTeacher()) {
+      await this._stopLiveSession();
+    }
     if (this.currentBoard && this.isDirty) {
       await this.saveCurrentBoard(false);
     }
@@ -354,11 +745,12 @@ class WhiteboardApp {
 
       this._applyBoardBgUI();
       this.objects.setObjects(data.objects || []);
-      this.drawing.setStrokes(data.strokes || []);
+      const maxObjZ = this.objects.getObjects().reduce((m, o) => Math.max(m, o.zIndex || 0), 0);
+      this.drawing.setStrokes(data.strokes || [], maxObjZ);
       this.selection.clear();
 
       if (data.viewport) {
-        this.viewport.setView(data.viewport.x, data.viewport.y, data.viewport.zoom);
+        this.viewport.setView(data.viewport.x, data.viewport.y, data.viewport.zoom, false);
       } else {
         this.viewport.centerOnOrigin();
       }
@@ -384,6 +776,10 @@ class WhiteboardApp {
   }
 
   _updateEmptyHint() {
+    if (this.isStudentMode) {
+      $('empty-hint').classList.add('hidden');
+      return;
+    }
     const empty = this.objects.getObjects().length === 0 && this.drawing.getStrokes().length === 0;
     $('empty-hint').classList.toggle('hidden', !empty);
   }
@@ -395,6 +791,14 @@ class WhiteboardApp {
     };
   }
 
+  _buildStateMaps() {
+    const objectsMap = {};
+    this.objects.getObjects().forEach((o) => { objectsMap[o.id] = o; });
+    const strokesMap = {};
+    this.drawing.getStrokes().forEach((s) => { strokesMap[s.id] = s; });
+    return { objectsMap, strokesMap };
+  }
+
   _restoreSnapshot(snap) {
     if (!snap) return;
     this.objects.setObjects(snap.objects);
@@ -402,25 +806,55 @@ class WhiteboardApp {
     this.selection.pruneMissing();
     this._updateEmptyHint();
     this._markDirty();
+    if (this.live.isActive()) {
+      const maps = this._buildStateMaps();
+      this.live.pushMutation({ ...maps, fullSync: true });
+    }
   }
 
   undo() {
+    if (this.isStudentMode) return;
     const prev = this.history.undo();
     if (prev) this._restoreSnapshot(prev);
   }
 
   redo() {
+    if (this.isStudentMode) return;
     const next = this.history.redo();
     if (next) this._restoreSnapshot(next);
   }
 
-  _onBoardMutated() {
-    this.history.push(this._getSnapshot());
+  _onBoardMutated(reason, meta = null) {
+    if (!this.isStudentMode) {
+      this.history.push(this._getSnapshot());
+      this._markDirty();
+    }
     this._updateEmptyHint();
-    this._markDirty();
+
+    if (this.live.isActive()) {
+      const maps = this._buildStateMaps();
+      const syncNow = async () => {
+        if (this.live.isTeacher() && meta?.changedObjectIds?.length) {
+          for (const id of meta.changedObjectIds) {
+            const obj = maps.objectsMap[id];
+            if (obj && obj.type === 'image' && obj.assetPath) {
+              const dataUrl = await this.storage.getAssetDataUrl(obj.assetPath, obj.inlineDataUrl);
+              if (dataUrl) await this.live.publishAssetIfNeeded(obj.assetPath, dataUrl);
+            }
+          }
+        }
+        if (meta) {
+          await this.live.pushMutation({ ...maps, ...meta });
+        } else {
+          await this.live.pushMutation({ ...maps, fullSync: true });
+        }
+      };
+      syncNow().catch((err) => console.error('Live sync error:', err));
+    }
   }
 
   _markDirty() {
+    if (this.isStudentMode) return;
     this.isDirty = true;
     this.setStatus('dirty', 'Є зміни...');
     clearTimeout(this.autosaveTimer);
@@ -430,8 +864,7 @@ class WhiteboardApp {
   }
 
   async saveCurrentBoard(manual = false) {
-    if (!this.currentBoard) return;
-    if (this.isSaving) return;
+    if (!this.currentBoard || this.isStudentMode || this.isSaving) return;
 
     clearTimeout(this.autosaveTimer);
     this.isSaving = true;
@@ -464,11 +897,15 @@ class WhiteboardApp {
   }
 
   async _handleImageInsert(file, worldPoint = null) {
+    if (this.isStudentMode) return;
     try {
       this.toast('Вставляю картинку...');
       const { obj, uploadPromise } = await this.objects.addImageFromFile(file, worldPoint);
       this.setTool('select', { keepSelection: true });
       this.selection.selectOnly([obj.id]);
+
+
+
       if (this.storage.isCloudReady()) {
         await uploadPromise;
         this.toast('Картинку збережено в хмару ✓');
@@ -480,6 +917,11 @@ class WhiteboardApp {
   }
 
   setTool(tool, { keepSelection = false } = {}) {
+    if (this.isStudentMode) {
+      if (this.studentPerm === 'view' && tool !== 'pan') return;
+      if (this.studentPerm === 'draw' && ['select', 'text', 'note'].includes(tool)) return;
+    }
+
     this.currentTool = tool;
     if (tool !== 'select' && !keepSelection) {
       this.selection.clear();
@@ -489,6 +931,7 @@ class WhiteboardApp {
     });
     const showDrawOpts = ['pen', 'highlighter', 'line', 'arrow', 'rect', 'ellipse'].includes(tool);
     $('draw-options').classList.toggle('hidden', !showDrawOpts);
+    $('text-options').classList.toggle('hidden', tool !== 'text' && tool !== 'note');
     this._updateViewportCursor();
   }
 
@@ -508,16 +951,12 @@ class WhiteboardApp {
 
   _onViewportPointerDown(e) {
     if (e.target.closest('#object-toolbar')) return;
-
-    // If clicking inside an actively editing textarea, let user edit text normally
     if (e.target.closest('.board-obj.editing .board-obj-editable')) return;
 
-    // Blur stray focus from topbar/sidebar inputs or buttons
     if (document.activeElement && document.activeElement !== document.body) {
       document.activeElement.blur();
     }
 
-    // Middle click, right click, Space+click, or Pan tool -> pan
     if (e.button === 1 || e.button === 2 || this.viewport.spacePressed || this.currentTool === 'pan') {
       e.preventDefault();
       this.viewport.startPan(e.clientX, e.clientY, e.pointerId, e.button === 2);
@@ -529,9 +968,10 @@ class WhiteboardApp {
     const worldPt = this.viewport.screenToWorld(e.clientX, e.clientY);
 
     if (this.currentTool === 'text') {
+      if (!this._canEditObjects()) return;
       e.preventDefault();
       const defColor = this.currentBoard?.bgTheme === 'light' ? '#18202c' : '#f3f5f9';
-      const obj = this.objects.addTextAt(worldPt, defColor);
+      const obj = this.objects.addTextAt(worldPt, defColor, '', this.defaultFont);
       this.setTool('select', { keepSelection: true });
       this.selection.selectOnly([obj.id]);
       this.objects.startEditing(obj.id);
@@ -539,8 +979,9 @@ class WhiteboardApp {
     }
 
     if (this.currentTool === 'note') {
+      if (!this._canEditObjects()) return;
       e.preventDefault();
-      const obj = this.objects.addNoteAt(worldPt);
+      const obj = this.objects.addNoteAt(worldPt, this.defaultFont);
       this.setTool('select', { keepSelection: true });
       this.selection.selectOnly([obj.id]);
       this.objects.startEditing(obj.id);
@@ -552,12 +993,16 @@ class WhiteboardApp {
       return;
     }
 
-    // Drawing tools
+    if (!this._canDraw()) return;
     this._isDrawingPointer = true;
     this.drawing.startPointer(this.currentTool, worldPt);
   }
 
   _onViewportPointerMove(e) {
+    if (this.live.isActive()) {
+      const worldPt = this.viewport.screenToWorld(e.clientX, e.clientY);
+      this.live.sendCursor(worldPt);
+    }
     if (this.viewport.isPanning) {
       this.viewport.movePan(e.clientX, e.clientY);
       return;
@@ -617,65 +1062,89 @@ class WhiteboardApp {
 
     const ctrl = e.ctrlKey || e.metaKey;
 
-    if (ctrl && e.code === 'KeyS') {
-      e.preventDefault();
-      this.saveCurrentBoard(true);
-      return;
-    }
-    if (ctrl && e.code === 'KeyZ') {
-      e.preventDefault();
-      if (e.shiftKey) this.redo();
-      else this.undo();
-      return;
-    }
-    if (ctrl && e.code === 'KeyY') {
-      e.preventDefault();
-      this.redo();
-      return;
-    }
-    if (ctrl && e.code === 'KeyD') {
-      e.preventDefault();
-      this.selection.duplicateSelected();
-      return;
-    }
-    if (ctrl && e.code === 'KeyA') {
-      e.preventDefault();
-      this.setTool('select', { keepSelection: true });
-      this.selection.selectAll();
-      return;
-    }
-    if (ctrl && e.code === 'KeyG') {
-      e.preventDefault();
-      if (e.shiftKey) this.selection.ungroupSelected();
-      else this.selection.groupSelected();
-      return;
-    }
-    if (ctrl && e.code === 'KeyC') {
-      if (this.selection.selectedIds.size > 0) {
-        this._copyHandled = false;
-        setTimeout(() => {
-          if (!this._copyHandled) this.selection.copySelected(null);
-        }, 0);
+    if (!this.isStudentMode) {
+      if (ctrl && e.code === 'KeyS') {
+        e.preventDefault();
+        this.saveCurrentBoard(true);
+        return;
       }
-      return;
-    }
-    if (ctrl && e.code === 'KeyX') {
-      if (this.selection.selectedIds.size > 0) {
-        this._cutHandled = false;
-        setTimeout(() => {
-          if (!this._cutHandled) this.selection.cutSelected(null);
-        }, 0);
+      if (ctrl && e.code === 'KeyZ') {
+        e.preventDefault();
+        if (e.shiftKey) this.redo();
+        else this.undo();
+        return;
       }
-      return;
+      if (ctrl && e.code === 'KeyY') {
+        e.preventDefault();
+        this.redo();
+        return;
+      }
+      if (e.code === 'Tab') {
+        e.preventDefault();
+        $('sidebar').classList.toggle('collapsed');
+        return;
+      }
     }
-    if (ctrl && e.code === 'KeyV') {
-      this._pasteHandled = false;
-      setTimeout(() => {
-        if (!this._pasteHandled && this.selection.hasClipboard()) {
-          this.selection.pasteInternal();
+
+    if (this._canEditObjects()) {
+      if (ctrl && e.code === 'KeyD') {
+        e.preventDefault();
+        this.selection.duplicateSelected();
+        return;
+      }
+      if (ctrl && e.code === 'KeyA') {
+        e.preventDefault();
+        this.setTool('select', { keepSelection: true });
+        this.selection.selectAll();
+        return;
+      }
+      if (ctrl && e.code === 'KeyG') {
+        e.preventDefault();
+        if (e.shiftKey) this.selection.ungroupSelected();
+        else this.selection.groupSelected();
+        return;
+      }
+      if (ctrl && e.code === 'KeyC') {
+        if (this.selection.selectedIds.size > 0) {
+          this._copyHandled = false;
+          setTimeout(() => {
+            if (!this._copyHandled) this.selection.copySelected(null);
+          }, 0);
         }
-      }, 40);
-      return;
+        return;
+      }
+      if (ctrl && e.code === 'KeyX') {
+        if (this.selection.selectedIds.size > 0) {
+          this._cutHandled = false;
+          setTimeout(() => {
+            if (!this._cutHandled) this.selection.cutSelected(null);
+          }, 0);
+        }
+        return;
+      }
+      if (ctrl && e.code === 'KeyV') {
+        this._pasteHandled = false;
+        setTimeout(() => {
+          if (!this._pasteHandled && this.selection.hasClipboard()) {
+            this.selection.pasteInternal();
+          }
+        }, 40);
+        return;
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace' || e.code === 'Delete') {
+        if (this.selection.deleteSelected()) {
+          e.preventDefault();
+        }
+        return;
+      }
+      if (e.key === 'Enter' && this.selection.selectedIds.size === 1) {
+        const items = this.selection.getSelectedItems();
+        if (items[0].kind === 'object' && (items[0].data.type === 'text' || items[0].data.type === 'note') && !items[0].data.locked) {
+          e.preventDefault();
+          this.objects.startEditing(items[0].data.id);
+          return;
+        }
+      }
     }
 
     if (e.code === 'Space') {
@@ -683,28 +1152,6 @@ class WhiteboardApp {
       this.viewport.spacePressed = true;
       this._updateViewportCursor();
       return;
-    }
-
-    if (e.code === 'Tab') {
-      e.preventDefault();
-      $('sidebar').classList.toggle('collapsed');
-      return;
-    }
-
-    if (e.key === 'Delete' || e.key === 'Backspace' || e.code === 'Delete') {
-      if (this.selection.deleteSelected()) {
-        e.preventDefault();
-      }
-      return;
-    }
-
-    if (e.key === 'Enter' && this.selection.selectedIds.size === 1) {
-      const items = this.selection.getSelectedItems();
-      if (items[0].kind === 'object' && (items[0].data.type === 'text' || items[0].data.type === 'note') && !items[0].data.locked) {
-        e.preventDefault();
-        this.objects.startEditing(items[0].data.id);
-        return;
-      }
     }
 
     const toolMap = {
@@ -726,7 +1173,7 @@ class WhiteboardApp {
     }
   }
 
-  // --- Modals ---
+  // --- MODALS ---
 
   _openBoardModal(mode, board = null) {
     this.modalBoardMode = mode;
@@ -752,6 +1199,7 @@ class WhiteboardApp {
         const badge = $('current-board-folder');
         badge.textContent = folder ? `📁 ${folder}` : '';
         badge.classList.toggle('hidden', !folder);
+        this.live.syncBoardMeta({ title });
         await this.saveCurrentBoard(false);
       }
       this.toast('Дані дошки оновлено');
@@ -765,14 +1213,25 @@ class WhiteboardApp {
     }
   }
 
-  _openSettingsModal() {
+  _switchSettingsTab(tabId) {
+    document.querySelectorAll('.modal-tab').forEach((t) => {
+      t.classList.toggle('active', t.dataset.tab === tabId);
+    });
+    document.querySelectorAll('.modal-tab-panel').forEach((p) => {
+      p.classList.toggle('hidden', p.id !== tabId);
+    });
+  }
+
+  _openSettingsModal(initialTab = 'tab-github') {
     $('cfg-owner').value = this.ghConfig.owner || '';
     $('cfg-repo').value = this.ghConfig.repo || '';
     $('cfg-branch').value = this.ghConfig.branch || 'main';
     $('cfg-token').value = this.ghConfig.token || '';
-    const resEl = $('settings-test-result');
-    resEl.classList.add('hidden');
-    resEl.textContent = '';
+    $('cfg-fb-url').value = this.fbConfig.databaseURL || '';
+
+    $('settings-test-result').classList.add('hidden');
+    $('fb-test-result').classList.add('hidden');
+    this._switchSettingsTab(initialTab);
     $('modal-settings').classList.remove('hidden');
   }
 
@@ -805,7 +1264,7 @@ class WhiteboardApp {
 
     const test = await this.storage.testConnection(nextCfg);
     if (!test.ok) {
-      resEl.className = `test-result err`;
+      resEl.className = 'test-result err';
       resEl.textContent = test.message;
       return;
     }
@@ -814,7 +1273,38 @@ class WhiteboardApp {
     this.storage.setConfig(this.ghConfig);
     $('modal-settings').classList.add('hidden');
     this.toast('GitHub підключено! Завантажую дошки...');
-    await this._boot();
+    await this._bootTeacher();
+  }
+
+  async _testFirebaseFromModal() {
+    const resEl = $('fb-test-result');
+    resEl.className = 'test-result';
+    resEl.textContent = 'Перевіряю Firebase...';
+    resEl.classList.remove('hidden');
+
+    const res = await this.live.testConnection($('cfg-fb-url').value);
+    resEl.className = `test-result ${res.ok ? 'ok' : 'err'}`;
+    resEl.textContent = res.message;
+  }
+
+  async _saveFirebaseFromModal() {
+    const resEl = $('fb-test-result');
+    resEl.className = 'test-result';
+    resEl.textContent = 'Перевіряю та зберігаю...';
+    resEl.classList.remove('hidden');
+
+    const rawUrl = $('cfg-fb-url').value;
+    const res = await this.live.testConnection(rawUrl);
+    if (!res.ok) {
+      resEl.className = 'test-result err';
+      resEl.textContent = res.message;
+      return;
+    }
+
+    this.fbConfig = saveFirebaseConfig(rawUrl);
+    $('cfg-fb-url').value = this.fbConfig.databaseURL;
+    $('modal-settings').classList.add('hidden');
+    this.toast('🔥 Firebase підключено! Тепер можна натискати «📡 Спільний урок».');
   }
 
   setStatus(kind, text) {
@@ -829,7 +1319,7 @@ class WhiteboardApp {
     div.className = 'toast';
     div.textContent = msg;
     container.appendChild(div);
-    setTimeout(() => div.remove(), 2600);
+    setTimeout(() => div.remove(), 2900);
   }
 }
 

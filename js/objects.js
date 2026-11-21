@@ -1,18 +1,24 @@
-// Board objects: Images, Text, Sticky Notes (DOM layer & text editing)
+// Board objects: Images, Text (with Propysy/cursive fonts), Sticky Notes + Live Sync updates
 
-import { IMAGE_LIMITS, NOTE_COLORS, uid } from './config.js';
+import { IMAGE_LIMITS, NOTE_COLORS, getFontPreset, uid } from './config.js';
 
 export class ObjectsManager {
-  constructor({ layerEl, viewport, storage, onMutate, onEditStateChange }) {
+  constructor({ layerEl, viewport, storage, onMutate, onEditStateChange, getNextZIndex }) {
     this.layerEl = layerEl;
     this.viewport = viewport;
     this.storage = storage;
     this.onMutate = onMutate;
     this.onEditStateChange = onEditStateChange || (() => {});
+    this.getNextZIndex = getNextZIndex || (() => this._localMaxZ() + 1);
 
     this.objects = [];
     this.editingId = null;
     this.domMap = new Map();
+  }
+
+  _localMaxZ() {
+    if (!this.objects.length) return 0;
+    return Math.max(...this.objects.map((o) => o.zIndex || 1));
   }
 
   setObjects(list) {
@@ -33,16 +39,6 @@ export class ObjectsManager {
     return Boolean(this.editingId);
   }
 
-  nextZIndex() {
-    if (!this.objects.length) return 1;
-    return Math.max(...this.objects.map((o) => o.zIndex || 1)) + 1;
-  }
-
-  minZIndex() {
-    if (!this.objects.length) return 1;
-    return Math.min(...this.objects.map((o) => o.zIndex || 1)) - 1;
-  }
-
   async addImageFromFile(file, worldPoint = null) {
     const center = worldPoint || this.viewport.getCenterWorld();
     const uploaded = await this.storage.uploadImage(file);
@@ -60,7 +56,7 @@ export class ObjectsManager {
       w,
       h,
       rotation: 0,
-      zIndex: this.nextZIndex(),
+      zIndex: this.getNextZIndex(),
       locked: false,
       assetPath: uploaded.assetPath,
       aspectRatio: uploaded.width / uploaded.height
@@ -71,14 +67,14 @@ export class ObjectsManager {
 
     this.objects.push(obj);
     this._mountObject(obj);
-    this.onMutate('add-image');
+    this.onMutate('add-image', { changedObjectIds: [obj.id] });
     return { obj, uploadPromise: uploaded.uploadPromise };
   }
 
-  addTextAt(worldPoint, defaultColor = '#f3f5f9', initialText = '') {
+  addTextAt(worldPoint, defaultColor = '#f3f5f9', initialText = '', fontFamily = 'sans') {
     const lines = initialText ? initialText.split('\n').length : 1;
-    const w = initialText ? Math.min(520, Math.max(220, initialText.length * 11)) : 260;
-    const h = Math.max(64, lines * 32 + 24);
+    const w = initialText ? Math.min(520, Math.max(240, initialText.length * 12)) : 280;
+    const h = Math.max(70, lines * 36 + 24);
     const obj = {
       id: uid('txt'),
       type: 'text',
@@ -87,19 +83,20 @@ export class ObjectsManager {
       w,
       h,
       rotation: 0,
-      zIndex: this.nextZIndex(),
+      zIndex: this.getNextZIndex(),
       locked: false,
       text: initialText,
-      fontSize: 22,
+      fontSize: fontFamily === 'propysy' ? 28 : 22,
+      fontFamily: fontFamily || 'sans',
       color: defaultColor
     };
     this.objects.push(obj);
     this._mountObject(obj);
-    this.onMutate('add-text');
+    this.onMutate('add-text', { changedObjectIds: [obj.id] });
     return obj;
   }
 
-  addNoteAt(worldPoint) {
+  addNoteAt(worldPoint, fontFamily = 'sans') {
     const palette = NOTE_COLORS[this.objects.length % NOTE_COLORS.length];
     const obj = {
       id: uid('note'),
@@ -109,16 +106,17 @@ export class ObjectsManager {
       w: 210,
       h: 190,
       rotation: 0,
-      zIndex: this.nextZIndex(),
+      zIndex: this.getNextZIndex(),
       locked: false,
       text: '',
-      fontSize: 18,
+      fontSize: fontFamily === 'propysy' ? 24 : 18,
+      fontFamily: fontFamily || 'sans',
       bg: palette.bg,
       color: palette.text
     };
     this.objects.push(obj);
     this._mountObject(obj);
-    this.onMutate('add-note');
+    this.onMutate('add-note', { changedObjectIds: [obj.id] });
     return obj;
   }
 
@@ -143,6 +141,44 @@ export class ObjectsManager {
       return true;
     });
     return removed;
+  }
+
+  // Flicker-free remote synchronization from Firebase
+  applyRemoteMap(remoteMap, { skipIds = new Set(), isTeacher = true } = {}) {
+    const incomingIds = new Set(Object.keys(remoteMap || {}));
+
+    // Remove objects deleted remotely
+    for (const obj of [...this.objects]) {
+      if (!incomingIds.has(obj.id) && !skipIds.has(obj.id)) {
+        this.removeIds(new Set([obj.id]));
+      }
+    }
+
+    // Add or update in place
+    for (const [id, remoteObj] of Object.entries(remoteMap || {})) {
+      if (!remoteObj || !remoteObj.id) continue;
+      if (skipIds.has(id)) continue;
+
+      const existing = this.getById(id);
+      if (existing) {
+        // If user is currently editing this text box, only interrupt if teacher locked it
+        if (this.editingId === id) {
+          if (remoteObj.locked && !isTeacher) {
+            this.editingId = null;
+            this.onEditStateChange(false, id);
+          } else {
+            continue;
+          }
+        }
+        Object.assign(existing, remoteObj);
+        if (!remoteObj.groupId) delete existing.groupId;
+        this.updateObjectEl(existing);
+      } else {
+        const copy = JSON.parse(JSON.stringify(remoteObj));
+        this.objects.push(copy);
+        this._mountObject(copy);
+      }
+    }
   }
 
   renderAll() {
@@ -193,7 +229,6 @@ export class ObjectsManager {
 
       ta.addEventListener('input', () => {
         obj.text = ta.value;
-        // Auto-grow plain text height as user types
         if (obj.type === 'text' && ta.scrollHeight > ta.clientHeight) {
           obj.h = Math.max(obj.h, ta.scrollHeight + 16);
           this.updateObjectEl(obj);
@@ -228,7 +263,7 @@ export class ObjectsManager {
     el.style.top = `${obj.y}px`;
     el.style.width = `${obj.w}px`;
     el.style.height = `${obj.h}px`;
-    el.style.zIndex = String(obj.zIndex || 1);
+    el.style.zIndex = String(obj.zIndex ?? 1);
     el.style.transform = obj.rotation ? `rotate(${obj.rotation}deg)` : '';
 
     el.classList.toggle('locked', Boolean(obj.locked));
@@ -237,20 +272,20 @@ export class ObjectsManager {
     const lockBadge = el.querySelector('.lock-indicator');
     if (lockBadge) lockBadge.classList.toggle('hidden', !obj.locked);
 
-    if (obj.type === 'note') {
-      const wrap = el.querySelector('.board-obj-note');
+    if (obj.type === 'note' || obj.type === 'text') {
+      const preset = getFontPreset(obj.fontFamily || 'sans');
       const ta = el.querySelector('.board-obj-editable');
-      if (wrap) wrap.style.backgroundColor = obj.bg || '#fff3a1';
-      if (ta) {
-        ta.style.color = obj.color || '#1f2328';
-        ta.style.fontSize = `${obj.fontSize || 18}px`;
-        if (ta.value !== (obj.text || '')) ta.value = obj.text || '';
+      if (obj.type === 'note') {
+        const wrap = el.querySelector('.board-obj-note');
+        if (wrap) wrap.style.backgroundColor = obj.bg || '#fff3a1';
       }
-    } else if (obj.type === 'text') {
-      const ta = el.querySelector('.board-obj-editable');
       if (ta) {
-        ta.style.color = obj.color || 'var(--default-text-color)';
-        ta.style.fontSize = `${obj.fontSize || 22}px`;
+        ta.style.color = obj.type === 'note'
+          ? (obj.color || '#1f2328')
+          : (obj.color || 'var(--default-text-color)');
+        ta.style.fontFamily = preset.family;
+        ta.style.lineHeight = String(preset.lineHeight);
+        ta.style.fontSize = `${Math.round((obj.fontSize || (obj.type === 'note' ? 18 : 22)) * preset.sizeScale)}px`;
         if (ta.value !== (obj.text || '')) ta.value = obj.text || '';
       }
     }
@@ -288,6 +323,7 @@ export class ObjectsManager {
     const prevId = this.editingId;
     this.editingId = null;
 
+    let deletedId = null;
     const obj = this.getById(prevId);
     if (obj) {
       const el = this.domMap.get(prevId);
@@ -295,15 +331,15 @@ export class ObjectsManager {
       if (ta) obj.text = ta.value;
 
       if (obj.type === 'text' && !obj.text.trim()) {
-        // Remove empty text box when user finishes without typing
         this.removeIds(new Set([prevId]));
+        deletedId = prevId;
       } else {
         this.updateObjectEl(obj);
       }
     }
 
     this.onEditStateChange(false, prevId);
-    this.onMutate('edit-text');
+    this.onMutate('edit-text', deletedId ? { deletedObjectIds: [deletedId] } : { changedObjectIds: [prevId] });
   }
 
   getObjectBounds(obj) {
@@ -316,10 +352,8 @@ export class ObjectsManager {
   }
 
   hitTest(wx, wy) {
-    // Check from topmost zIndex downward
-    const sorted = [...this.objects].sort((a, b) => (b.zIndex || 0) - (a.zIndex || 0));
+    const sorted = [...this.objects].sort((a, b) => (b.zIndex ?? 0) - (a.zIndex ?? 0));
     for (const o of sorted) {
-      // Transform point into object's unrotated local space
       const cx = o.x + o.w / 2;
       const cy = o.y + o.h / 2;
       let lx = wx;

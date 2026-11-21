@@ -391,13 +391,24 @@
   will-change: transform;
 }
 
-.objects-layer {
+/* Objects & Strokes share #world stacking context (no z-index on wrappers!) */
+.objects-layer, .strokes-layer {
   position: absolute;
   left: 0;
   top: 0;
 }
 
-.drawing-layer {
+.strokes-layer {
+  pointer-events: none;
+}
+
+.stroke-item {
+  position: absolute;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.active-drawing-layer {
   position: absolute;
   left: 0;
   top: 0;
@@ -405,14 +416,22 @@
   height: 1px;
   overflow: visible;
   pointer-events: none;
-  z-index: 100000;
+  z-index: 999900;
+}
+
+.cursors-layer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 999930;
+  pointer-events: none;
 }
 
 .selection-layer {
   position: absolute;
   left: 0;
   top: 0;
-  z-index: 100050;
+  z-index: 999950;
   pointer-events: none;
 }
 
@@ -428,7 +447,7 @@
 .board-obj.editing {
   border-color: var(--accent);
   border-style: solid;
-  z-index: 100100 !important;
+  z-index: 999980 !important;
 }
 
 .board-obj-img {
@@ -953,4 +972,281 @@
   .tool-label { display: none; }
   .tool-btn { min-width: 38px; padding: 8px; }
   .zoom-controls { bottom: 72px; }
+}
+
+/* Student Mode Visibility */
+body.student-mode .teacher-only,
+body.student-mode #sidebar {
+  display: none !important;
+}
+
+.student-badge {
+  font-size: 12px;
+  background: rgba(91, 141, 239, 0.18);
+  color: #9bc0ff;
+  border: 1px solid rgba(91, 141, 239, 0.45);
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.btn-live {
+  background: rgba(52, 195, 143, 0.16);
+  border-color: rgba(52, 195, 143, 0.45);
+  color: #5ee3b3;
+}
+.btn-live:hover {
+  background: rgba(52, 195, 143, 0.28);
+  color: #fff;
+}
+.btn-live.is-live {
+  background: rgba(229, 83, 83, 0.2);
+  border-color: rgba(229, 83, 83, 0.55);
+  color: #ff9a9a;
+}
+
+/* Live Teacher Control Bar */
+.live-bar {
+  background: #171c26;
+  border-bottom: 1px solid rgba(91, 141, 239, 0.4);
+  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  z-index: 21;
+  flex-shrink: 0;
+}
+
+.live-bar-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.live-dot-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #ff7d7d;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(229, 83, 83, 0.15);
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ff5c5c;
+  animation: livePulse 1.4s infinite;
+}
+
+@keyframes livePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
+
+.live-label {
+  font-size: 12px;
+  color: var(--ui-text-muted);
+}
+
+.segmented {
+  display: inline-flex;
+  background: var(--ui-bg);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  gap: 2px;
+}
+
+.seg-btn {
+  border: none;
+  background: transparent;
+  color: var(--ui-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.seg-btn:hover { color: var(--ui-text); }
+.seg-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+.seg-btn[data-perm="view"].active {
+  background: var(--danger);
+}
+
+.btn.follow-active {
+  background: rgba(241, 180, 76, 0.22);
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+/* Connected Students Popover */
+.live-students-wrap {
+  position: relative;
+}
+
+.students-popover {
+  position: absolute;
+  top: 36px;
+  right: 0;
+  min-width: 240px;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 60;
+}
+
+.student-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  background: var(--ui-surface-2);
+  font-size: 12.5px;
+}
+
+.student-row-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.student-color-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Student Follow Banner */
+.student-follow-banner {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  background: rgba(27, 31, 39, 0.9);
+  border: 1px solid rgba(241, 180, 76, 0.55);
+  color: var(--warning);
+  padding: 5px 11px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  pointer-events: none;
+  z-index: 26;
+}
+
+/* Live Remote Cursors */
+.remote-cursor {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  transform: translate(0, 0);
+  transition: transform 0.08s linear;
+}
+
+.remote-cursor-arrow {
+  width: 14px;
+  height: 14px;
+  display: block;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+
+.remote-cursor-tag {
+  position: absolute;
+  left: 12px;
+  top: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+
+/* Context Toolbar Font Select & Sub Label */
+.ctx-select {
+  background: var(--ui-surface-2);
+  border: 1px solid var(--ui-border);
+  color: var(--ui-text);
+  border-radius: 6px;
+  padding: 4px 7px;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+}
+
+.sub-label {
+  font-size: 12px;
+  color: var(--ui-text-muted);
+  font-weight: 600;
+}
+
+/* Settings Modal Tabs */
+.modal-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--ui-border);
+  background: var(--ui-bg);
+  padding: 0 12px;
+  gap: 4px;
+}
+
+.modal-tab {
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ui-text-muted);
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.modal-tab:hover { color: var(--ui-text); }
+.modal-tab.active {
+  color: var(--ui-text);
+  border-bottom-color: var(--accent);
+}
+
+.modal-hint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ui-text-muted);
+  line-height: 1.45;
+  background: var(--ui-bg);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--ui-border);
+}
+
+.modal-hint code, .modal-desc code {
+  background: var(--ui-surface-2);
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-size: 11.5px;
+}
+
+/* Disabled tool state for student permissions */
+.tool-btn.perm-hidden {
+  display: none !important;
 }

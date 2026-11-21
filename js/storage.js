@@ -56,7 +56,13 @@ export class StorageService {
     this.config = config;
     this.shaCache = new Map();
     this.assetUrlCache = new Map();
+    this.assetDataUrlCache = new Map();
     this.pendingUploads = new Set();
+    this.remoteAssetResolver = null;
+  }
+
+  setRemoteAssetResolver(fn) {
+    this.remoteAssetResolver = fn;
   }
 
   setConfig(config) {
@@ -310,8 +316,10 @@ export class StorageService {
     const fileName = `img_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}.${compressed.ext}`;
     const assetPath = `assets/${fileName}`;
 
-    // Cache locally for instant rendering
+    // Cache locally for instant rendering & live sharing
+    const dataUrlForLive = `data:image/${compressed.ext};base64,${compressed.base64}`;
     this.assetUrlCache.set(assetPath, compressed.localUrl);
+    this.assetDataUrlCache.set(assetPath, dataUrlForLive);
 
     if (this.isCloudReady()) {
       const uploadPromise = this.putBase64(assetPath, compressed.base64, `Add image ${fileName}`)
@@ -352,7 +360,17 @@ export class StorageService {
     }
     if (inlineFallback) {
       this.assetUrlCache.set(assetPath, inlineFallback);
+      this.assetDataUrlCache.set(assetPath, inlineFallback);
       return inlineFallback;
+    }
+    // Live student mode: fetch from temporary Firebase room assets
+    if (this.remoteAssetResolver) {
+      const remoteUrl = await this.remoteAssetResolver(assetPath);
+      if (remoteUrl) {
+        this.assetUrlCache.set(assetPath, remoteUrl);
+        this.assetDataUrlCache.set(assetPath, remoteUrl);
+        return remoteUrl;
+      }
     }
     if (!this.isCloudReady()) return null;
 
@@ -363,9 +381,25 @@ export class StorageService {
     if (!rawBase64 && meta.data.sha) {
       rawBase64 = await this._getBlobBase64(meta.data.sha);
     }
-    const blob = base64ToBlob(rawBase64, guessMime(assetPath));
+    const mime = guessMime(assetPath);
+    const cleanB64 = rawBase64.replace(/\s/g, '');
+    this.assetDataUrlCache.set(assetPath, `data:${mime};base64,${cleanB64}`);
+    const blob = base64ToBlob(cleanB64, mime);
     const url = URL.createObjectURL(blob);
     this.assetUrlCache.set(assetPath, url);
     return url;
+  }
+
+  async getAssetDataUrl(assetPath, inlineFallback = null) {
+    if (!assetPath) return inlineFallback;
+    if (this.assetDataUrlCache.has(assetPath)) {
+      return this.assetDataUrlCache.get(assetPath);
+    }
+    if (inlineFallback) {
+      this.assetDataUrlCache.set(assetPath, inlineFallback);
+      return inlineFallback;
+    }
+    await this.resolveAssetUrl(assetPath, inlineFallback);
+    return this.assetDataUrlCache.get(assetPath) || null;
   }
 }
