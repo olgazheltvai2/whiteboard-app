@@ -1,6 +1,7 @@
-// Main application controller: wires all modules, hotkeys, paste & autosave
+// Main application controller: wires all modules, hotkeys, copy/paste & autosave
 
 import {
+  CLIPBOARD_MARKER_PREFIX,
   DRAW_COLORS,
   DRAW_WIDTHS,
   STORAGE_KEYS,
@@ -12,6 +13,7 @@ import { HistoryManager } from './history.js';
 import { ViewportController } from './viewport.js';
 import { ObjectsManager } from './objects.js';
 import { DrawingManager } from './drawing.js';
+import { SelectionManager } from './selection.js';
 import { BoardsManager } from './boards.js';
 
 const $ = (id) => document.getElementById(id);
@@ -44,18 +46,19 @@ class WhiteboardApp {
       }
     );
 
-    this.history = new HistoryManager(50, () => {
+    this.history = new HistoryManager(60, () => {
       $('btn-undo').disabled = !this.history.canUndo();
       $('btn-redo').disabled = !this.history.canRedo();
     });
 
     this.objects = new ObjectsManager({
       layerEl: $('objects-layer'),
-      toolbarEl: $('object-toolbar'),
       viewport: this.viewport,
       storage: this.storage,
-      getTool: () => this.currentTool,
-      onMutate: () => this._onBoardMutated()
+      onMutate: () => this._onBoardMutated(),
+      onEditStateChange: () => {
+        if (this.selection) this.selection.render();
+      }
     });
 
     this.drawing = new DrawingManager({
@@ -63,6 +66,19 @@ class WhiteboardApp {
       activeGroup: $('active-stroke-group'),
       viewport: this.viewport,
       onMutate: () => this._onBoardMutated()
+    });
+
+    this.selection = new SelectionManager({
+      viewportEl: $('viewport'),
+      selectionBoxEl: $('selection-box'),
+      outlinesEl: $('selection-items-outlines'),
+      marqueeEl: $('marquee-box'),
+      toolbarEl: $('object-toolbar'),
+      viewport: this.viewport,
+      objects: this.objects,
+      drawing: this.drawing,
+      onMutate: () => this._onBoardMutated(),
+      onToast: (msg) => this.toast(msg)
     });
 
     this.boards = new BoardsManager({
@@ -77,7 +93,6 @@ class WhiteboardApp {
   }
 
   _initUI() {
-    // Build color swatches
     const swatchesEl = $('color-swatches');
     DRAW_COLORS.forEach((col) => {
       const btn = document.createElement('button');
@@ -85,6 +100,7 @@ class WhiteboardApp {
       btn.style.backgroundColor = col;
       btn.title = col;
       btn.addEventListener('click', () => {
+        btn.blur();
         this.drawing.setColor(col);
         swatchesEl.querySelectorAll('.swatch-btn').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
@@ -92,7 +108,6 @@ class WhiteboardApp {
       swatchesEl.appendChild(btn);
     });
 
-    // Build width swatches
     const widthsEl = $('width-swatches');
     DRAW_WIDTHS.forEach((w) => {
       const btn = document.createElement('button');
@@ -104,6 +119,7 @@ class WhiteboardApp {
       dot.style.height = `${w.dot}px`;
       btn.appendChild(dot);
       btn.addEventListener('click', () => {
+        btn.blur();
         this.drawing.setWidth(w.size);
         widthsEl.querySelectorAll('.width-btn').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
@@ -113,22 +129,27 @@ class WhiteboardApp {
   }
 
   _bindEvents() {
-    // Sidebar toggle
-    const toggleSidebar = () => $('sidebar').classList.toggle('collapsed');
+    const toggleSidebar = (e) => {
+      e?.currentTarget?.blur();
+      $('sidebar').classList.toggle('collapsed');
+    };
     $('btn-open-sidebar').addEventListener('click', toggleSidebar);
     $('btn-toggle-sidebar-inner').addEventListener('click', toggleSidebar);
 
-    // Tool dock buttons
     document.querySelectorAll('.tool-btn[data-tool]').forEach((btn) => {
-      btn.addEventListener('click', () => this.setTool(btn.dataset.tool));
+      btn.addEventListener('click', () => {
+        btn.blur();
+        this.setTool(btn.dataset.tool);
+      });
     });
 
-    // Undo / Redo
-    $('btn-undo').addEventListener('click', () => this.undo());
-    $('btn-redo').addEventListener('click', () => this.redo());
+    $('btn-undo').addEventListener('click', (e) => { e.currentTarget.blur(); this.undo(); });
+    $('btn-redo').addEventListener('click', (e) => { e.currentTarget.blur(); this.redo(); });
 
-    // Upload image button
-    $('btn-upload-image').addEventListener('click', () => $('image-file-input').click());
+    $('btn-upload-image').addEventListener('click', (e) => {
+      e.currentTarget.blur();
+      $('image-file-input').click();
+    });
     $('image-file-input').addEventListener('change', async (e) => {
       const files = [...(e.target.files || [])];
       e.target.value = '';
@@ -137,14 +158,13 @@ class WhiteboardApp {
       }
     });
 
-    // Zoom buttons
-    $('btn-zoom-in').addEventListener('click', () => this.viewport.zoomCenter(1.2));
-    $('btn-zoom-out').addEventListener('click', () => this.viewport.zoomCenter(1 / 1.2));
-    $('btn-zoom-reset').addEventListener('click', () => this.viewport.resetZoom());
-    $('btn-zoom-fit').addEventListener('click', () => this.fitContent());
+    $('btn-zoom-in').addEventListener('click', (e) => { e.currentTarget.blur(); this.viewport.zoomCenter(1.2); });
+    $('btn-zoom-out').addEventListener('click', (e) => { e.currentTarget.blur(); this.viewport.zoomCenter(1 / 1.2); });
+    $('btn-zoom-reset').addEventListener('click', (e) => { e.currentTarget.blur(); this.viewport.resetZoom(); });
+    $('btn-zoom-fit').addEventListener('click', (e) => { e.currentTarget.blur(); this.fitContent(); });
 
-    // Background theme & pattern
-    $('btn-bg-theme').addEventListener('click', () => {
+    $('btn-bg-theme').addEventListener('click', (e) => {
+      e.currentTarget.blur();
       if (!this.currentBoard) return;
       this.currentBoard.bgTheme = this.currentBoard.bgTheme === 'light' ? 'dark' : 'light';
       this._applyBoardBgUI();
@@ -152,13 +172,13 @@ class WhiteboardApp {
     });
 
     $('select-bg-pattern').addEventListener('change', (e) => {
+      e.currentTarget.blur();
       if (!this.currentBoard) return;
       this.currentBoard.bgPattern = e.target.value;
       this._applyBoardBgUI();
       this._markDirty();
     });
 
-    // Topbar title edit
     $('current-board-title').addEventListener('change', async (e) => {
       if (!this.currentBoard) return;
       const val = e.target.value.trim() || 'Без назви';
@@ -168,15 +188,15 @@ class WhiteboardApp {
       this._markDirty();
     });
 
-    // Save now & Clear drawings
-    $('btn-save-now').addEventListener('click', () => this.saveCurrentBoard(true));
-    $('btn-clear-drawings').addEventListener('click', () => {
+    $('btn-save-now').addEventListener('click', (e) => { e.currentTarget.blur(); this.saveCurrentBoard(true); });
+    $('btn-clear-drawings').addEventListener('click', (e) => {
+      e.currentTarget.blur();
       if (this.drawing.clearAllDrawings()) {
+        this.selection.pruneMissing();
         this.toast('Малюнки очищено (Ctrl+Z щоб повернути)');
       }
     });
 
-    // New board button & custom edit event
     $('btn-new-board').addEventListener('click', () => this._openBoardModal('create'));
     window.addEventListener('open-board-modal', (e) => {
       this._openBoardModal(e.detail.mode, e.detail.board);
@@ -186,17 +206,15 @@ class WhiteboardApp {
       if (e.key === 'Enter') this._confirmBoardModal();
     });
 
-    // GitHub settings modal
     $('btn-open-settings').addEventListener('click', () => this._openSettingsModal());
     $('btn-test-github').addEventListener('click', () => this._testGitHubFromModal());
     $('btn-save-settings').addEventListener('click', () => this._saveSettingsFromModal());
 
-    // Generic modal close buttons
     document.querySelectorAll('.modal-close').forEach((btn) => {
       btn.addEventListener('click', () => $(btn.dataset.close).classList.add('hidden'));
     });
 
-    // Viewport Pointer Interactions (Pan, Draw, Create Text/Note, Deselect)
+    // Viewport Pointer Interactions
     const vp = $('viewport');
     vp.addEventListener('pointerdown', (e) => this._onViewportPointerDown(e));
     window.addEventListener('pointermove', (e) => this._onViewportPointerMove(e));
@@ -213,15 +231,56 @@ class WhiteboardApp {
       }
     });
 
-    // Global Paste (Ctrl+V images)
+    // Native Copy / Cut / Paste for board items + external images/text
+    window.addEventListener('copy', (e) => {
+      if (this._isTypingInInput(document.activeElement) || this.objects.isEditing()) return;
+      if (this.selection.selectedIds.size > 0) {
+        this._copyHandled = true;
+        this.selection.copySelected(e);
+      }
+    });
+
+    window.addEventListener('cut', (e) => {
+      if (this._isTypingInInput(document.activeElement) || this.objects.isEditing()) return;
+      if (this.selection.selectedIds.size > 0) {
+        this._cutHandled = true;
+        this.selection.cutSelected(e);
+      }
+    });
+
     window.addEventListener('paste', async (e) => {
-      if (this._isTypingInInput(e.target)) return;
+      if (this._isTypingInInput(document.activeElement) || this.objects.isEditing()) return;
+      this._pasteHandled = true;
+
       const items = [...(e.clipboardData?.items || [])];
       const imgItem = items.find((it) => it.type.startsWith('image/'));
       if (imgItem) {
         e.preventDefault();
         const file = imgItem.getAsFile();
         if (file) await this._handleImageInsert(file);
+        return;
+      }
+
+      const plain = e.clipboardData?.getData('text/plain') || '';
+      if (plain.startsWith(CLIPBOARD_MARKER_PREFIX) && this.selection.hasClipboard()) {
+        e.preventDefault();
+        this.selection.pasteInternal();
+        return;
+      }
+
+      if (plain.trim()) {
+        e.preventDefault();
+        const defColor = this.currentBoard?.bgTheme === 'light' ? '#18202c' : '#f3f5f9';
+        const obj = this.objects.addTextAt(this.viewport.getCenterWorld(), defColor, plain.trim());
+        this.setTool('select', { keepSelection: true });
+        this.selection.selectOnly([obj.id]);
+        this.toast('Текст вставлено на дошку');
+        return;
+      }
+
+      if (this.selection.hasClipboard()) {
+        e.preventDefault();
+        this.selection.pasteInternal();
       }
     });
 
@@ -234,7 +293,6 @@ class WhiteboardApp {
       }
     });
 
-    // Warn before closing with unsaved changes
     window.addEventListener('beforeunload', (e) => {
       if (this.isDirty || this.isSaving) {
         e.preventDefault();
@@ -297,6 +355,7 @@ class WhiteboardApp {
       this._applyBoardBgUI();
       this.objects.setObjects(data.objects || []);
       this.drawing.setStrokes(data.strokes || []);
+      this.selection.clear();
 
       if (data.viewport) {
         this.viewport.setView(data.viewport.x, data.viewport.y, data.viewport.zoom);
@@ -340,6 +399,7 @@ class WhiteboardApp {
     if (!snap) return;
     this.objects.setObjects(snap.objects);
     this.drawing.setStrokes(snap.strokes);
+    this.selection.pruneMissing();
     this._updateEmptyHint();
     this._markDirty();
   }
@@ -406,8 +466,9 @@ class WhiteboardApp {
   async _handleImageInsert(file, worldPoint = null) {
     try {
       this.toast('Вставляю картинку...');
-      const { uploadPromise } = await this.objects.addImageFromFile(file, worldPoint);
-      this.setTool('select');
+      const { obj, uploadPromise } = await this.objects.addImageFromFile(file, worldPoint);
+      this.setTool('select', { keepSelection: true });
+      this.selection.selectOnly([obj.id]);
       if (this.storage.isCloudReady()) {
         await uploadPromise;
         this.toast('Картинку збережено в хмару ✓');
@@ -418,10 +479,10 @@ class WhiteboardApp {
     }
   }
 
-  setTool(tool) {
+  setTool(tool, { keepSelection = false } = {}) {
     this.currentTool = tool;
-    if (tool !== 'select') {
-      this.objects.clearSelection();
+    if (tool !== 'select' && !keepSelection) {
+      this.selection.clear();
     }
     document.querySelectorAll('.tool-btn[data-tool]').forEach((b) => {
       b.classList.toggle('active', b.dataset.tool === tool);
@@ -446,8 +507,15 @@ class WhiteboardApp {
   }
 
   _onViewportPointerDown(e) {
-    // Ignore clicks on floating object toolbar
     if (e.target.closest('#object-toolbar')) return;
+
+    // If clicking inside an actively editing textarea, let user edit text normally
+    if (e.target.closest('.board-obj.editing .board-obj-editable')) return;
+
+    // Blur stray focus from topbar/sidebar inputs or buttons
+    if (document.activeElement && document.activeElement !== document.body) {
+      document.activeElement.blur();
+    }
 
     // Middle click, right click, Space+click, or Pan tool -> pan
     if (e.button === 1 || e.button === 2 || this.viewport.spacePressed || this.currentTool === 'pan') {
@@ -460,21 +528,27 @@ class WhiteboardApp {
 
     const worldPt = this.viewport.screenToWorld(e.clientX, e.clientY);
 
-    if (this.currentTool === 'select') {
-      this.objects.clearSelection();
-      return;
-    }
-
     if (this.currentTool === 'text') {
+      e.preventDefault();
       const defColor = this.currentBoard?.bgTheme === 'light' ? '#18202c' : '#f3f5f9';
-      this.objects.addTextAt(worldPt, defColor);
-      this.setTool('select');
+      const obj = this.objects.addTextAt(worldPt, defColor);
+      this.setTool('select', { keepSelection: true });
+      this.selection.selectOnly([obj.id]);
+      this.objects.startEditing(obj.id);
       return;
     }
 
     if (this.currentTool === 'note') {
-      this.objects.addNoteAt(worldPt);
-      this.setTool('select');
+      e.preventDefault();
+      const obj = this.objects.addNoteAt(worldPt);
+      this.setTool('select', { keepSelection: true });
+      this.selection.selectOnly([obj.id]);
+      this.objects.startEditing(obj.id);
+      return;
+    }
+
+    if (this.currentTool === 'select') {
+      this.selection.handleViewportPointerDown(e);
       return;
     }
 
@@ -529,14 +603,17 @@ class WhiteboardApp {
 
   _onKeyDown(e) {
     if (e.key === 'Escape') {
-      this.objects.stopEditing();
-      this.objects.clearSelection();
+      if (this.objects.isEditing()) {
+        this.objects.stopEditing();
+        return;
+      }
+      this.selection.clear();
       $('modal-settings').classList.add('hidden');
       $('modal-board').classList.add('hidden');
       return;
     }
 
-    if (this._isTypingInInput(e.target)) return;
+    if (this._isTypingInInput(e.target) || this.objects.isEditing()) return;
 
     const ctrl = e.ctrlKey || e.metaKey;
 
@@ -558,7 +635,46 @@ class WhiteboardApp {
     }
     if (ctrl && e.code === 'KeyD') {
       e.preventDefault();
-      this.objects.duplicateSelected();
+      this.selection.duplicateSelected();
+      return;
+    }
+    if (ctrl && e.code === 'KeyA') {
+      e.preventDefault();
+      this.setTool('select', { keepSelection: true });
+      this.selection.selectAll();
+      return;
+    }
+    if (ctrl && e.code === 'KeyG') {
+      e.preventDefault();
+      if (e.shiftKey) this.selection.ungroupSelected();
+      else this.selection.groupSelected();
+      return;
+    }
+    if (ctrl && e.code === 'KeyC') {
+      if (this.selection.selectedIds.size > 0) {
+        this._copyHandled = false;
+        setTimeout(() => {
+          if (!this._copyHandled) this.selection.copySelected(null);
+        }, 0);
+      }
+      return;
+    }
+    if (ctrl && e.code === 'KeyX') {
+      if (this.selection.selectedIds.size > 0) {
+        this._cutHandled = false;
+        setTimeout(() => {
+          if (!this._cutHandled) this.selection.cutSelected(null);
+        }, 0);
+      }
+      return;
+    }
+    if (ctrl && e.code === 'KeyV') {
+      this._pasteHandled = false;
+      setTimeout(() => {
+        if (!this._pasteHandled && this.selection.hasClipboard()) {
+          this.selection.pasteInternal();
+        }
+      }, 40);
       return;
     }
 
@@ -575,9 +691,20 @@ class WhiteboardApp {
       return;
     }
 
-    if (e.key === 'Delete' || e.key === 'Backspace') {
-      this.objects.deleteSelected();
+    if (e.key === 'Delete' || e.key === 'Backspace' || e.code === 'Delete') {
+      if (this.selection.deleteSelected()) {
+        e.preventDefault();
+      }
       return;
+    }
+
+    if (e.key === 'Enter' && this.selection.selectedIds.size === 1) {
+      const items = this.selection.getSelectedItems();
+      if (items[0].kind === 'object' && (items[0].data.type === 'text' || items[0].data.type === 'note') && !items[0].data.locked) {
+        e.preventDefault();
+        this.objects.startEditing(items[0].data.id);
+        return;
+      }
     }
 
     const toolMap = {
@@ -678,7 +805,7 @@ class WhiteboardApp {
 
     const test = await this.storage.testConnection(nextCfg);
     if (!test.ok) {
-      resEl.className = 'test-result err';
+      resEl.className = `test-result err`;
       resEl.textContent = test.message;
       return;
     }

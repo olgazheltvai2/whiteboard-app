@@ -1,29 +1,23 @@
-// Board objects: Images, Text, Sticky Notes, Drag, Resize, Rotate, Lock, Z-Order
+// Board objects: Images, Text, Sticky Notes (DOM layer & text editing)
 
 import { IMAGE_LIMITS, NOTE_COLORS, uid } from './config.js';
 
 export class ObjectsManager {
-  constructor({ layerEl, toolbarEl, viewport, storage, onMutate, getTool }) {
+  constructor({ layerEl, viewport, storage, onMutate, onEditStateChange }) {
     this.layerEl = layerEl;
-    this.toolbarEl = toolbarEl;
     this.viewport = viewport;
     this.storage = storage;
     this.onMutate = onMutate;
-    this.getTool = getTool;
+    this.onEditStateChange = onEditStateChange || (() => {});
 
     this.objects = [];
-    this.selectedId = null;
     this.editingId = null;
     this.domMap = new Map();
-
-    this.interaction = null;
-    this._bindGlobalPointer();
   }
 
   setObjects(list) {
-    this.objects = Array.isArray(list) ? list : [];
-    this.selectedId = null;
     this.editingId = null;
+    this.objects = Array.isArray(list) ? list : [];
     this.renderAll();
   }
 
@@ -31,21 +25,12 @@ export class ObjectsManager {
     return this.objects;
   }
 
-  getSelected() {
-    return this.objects.find((o) => o.id === this.selectedId) || null;
+  getById(id) {
+    return this.objects.find((o) => o.id === id) || null;
   }
 
-  select(id) {
-    if (this.editingId && this.editingId !== id) {
-      this.stopEditing();
-    }
-    this.selectedId = id;
-    this._updateSelectionVisuals();
-    this._renderContextBar();
-  }
-
-  clearSelection() {
-    this.select(null);
+  isEditing() {
+    return Boolean(this.editingId);
   }
 
   nextZIndex() {
@@ -86,30 +71,30 @@ export class ObjectsManager {
 
     this.objects.push(obj);
     this._mountObject(obj);
-    this.select(obj.id);
     this.onMutate('add-image');
     return { obj, uploadPromise: uploaded.uploadPromise };
   }
 
-  addTextAt(worldPoint, defaultColor = '#f3f5f9') {
+  addTextAt(worldPoint, defaultColor = '#f3f5f9', initialText = '') {
+    const lines = initialText ? initialText.split('\n').length : 1;
+    const w = initialText ? Math.min(520, Math.max(220, initialText.length * 11)) : 260;
+    const h = Math.max(64, lines * 32 + 24);
     const obj = {
       id: uid('txt'),
       type: 'text',
-      x: Math.round(worldPoint.x - 110),
-      y: Math.round(worldPoint.y - 24),
-      w: 240,
-      h: 72,
+      x: Math.round(worldPoint.x - w / 2),
+      y: Math.round(worldPoint.y - 28),
+      w,
+      h,
       rotation: 0,
       zIndex: this.nextZIndex(),
       locked: false,
-      text: '',
+      text: initialText,
       fontSize: 22,
       color: defaultColor
     };
     this.objects.push(obj);
     this._mountObject(obj);
-    this.select(obj.id);
-    this.startEditing(obj.id);
     this.onMutate('add-text');
     return obj;
   }
@@ -133,61 +118,31 @@ export class ObjectsManager {
     };
     this.objects.push(obj);
     this._mountObject(obj);
-    this.select(obj.id);
-    this.startEditing(obj.id);
     this.onMutate('add-note');
     return obj;
   }
 
-  duplicateSelected() {
-    const src = this.getSelected();
-    if (!src) return;
-    const copy = JSON.parse(JSON.stringify(src));
-    copy.id = uid(src.type);
-    copy.x += 26;
-    copy.y += 26;
-    copy.locked = false;
-    copy.zIndex = this.nextZIndex();
-    this.objects.push(copy);
-    this._mountObject(copy);
-    this.select(copy.id);
-    this.onMutate('duplicate');
+  addRawObjects(list) {
+    for (const obj of list) {
+      this.objects.push(obj);
+      this._mountObject(obj);
+    }
   }
 
-  deleteSelected() {
-    const src = this.getSelected();
-    if (!src || src.locked) return;
-    this.objects = this.objects.filter((o) => o.id !== src.id);
-    const el = this.domMap.get(src.id);
-    if (el) el.remove();
-    this.domMap.delete(src.id);
-    this.select(null);
-    this.onMutate('delete');
-  }
-
-  toggleLockSelected() {
-    const obj = this.getSelected();
-    if (!obj) return;
-    obj.locked = !obj.locked;
-    this._updateObjectEl(obj);
-    this._renderContextBar();
-    this.onMutate('toggle-lock');
-  }
-
-  bringToFrontSelected() {
-    const obj = this.getSelected();
-    if (!obj) return;
-    obj.zIndex = this.nextZIndex();
-    this._updateObjectEl(obj);
-    this.onMutate('z-front');
-  }
-
-  sendToBackSelected() {
-    const obj = this.getSelected();
-    if (!obj) return;
-    obj.zIndex = this.minZIndex();
-    this._updateObjectEl(obj);
-    this.onMutate('z-back');
+  removeIds(idSet) {
+    let removed = false;
+    this.objects = this.objects.filter((o) => {
+      if (idSet.has(o.id)) {
+        const el = this.domMap.get(o.id);
+        if (el) el.remove();
+        this.domMap.delete(o.id);
+        if (this.editingId === o.id) this.editingId = null;
+        removed = true;
+        return false;
+      }
+      return true;
+    });
+    return removed;
   }
 
   renderAll() {
@@ -197,8 +152,6 @@ export class ObjectsManager {
     for (const obj of sorted) {
       this._mountObject(obj);
     }
-    this._updateSelectionVisuals();
-    this._renderContextBar();
   }
 
   _mountObject(obj) {
@@ -225,15 +178,28 @@ export class ObjectsManager {
     } else if (obj.type === 'note' || obj.type === 'text') {
       const wrap = document.createElement('div');
       wrap.className = obj.type === 'note' ? 'board-obj-note' : 'board-obj-text';
+
       const ta = document.createElement('textarea');
       ta.className = 'board-obj-editable';
       ta.placeholder = obj.type === 'note' ? 'Напишіть на стікері...' : 'Введіть текст...';
       ta.value = obj.text || '';
       ta.spellcheck = false;
 
+      ta.addEventListener('pointerdown', (e) => {
+        if (this.editingId === obj.id) {
+          e.stopPropagation();
+        }
+      });
+
       ta.addEventListener('input', () => {
         obj.text = ta.value;
+        // Auto-grow plain text height as user types
+        if (obj.type === 'text' && ta.scrollHeight > ta.clientHeight) {
+          obj.h = Math.max(obj.h, ta.scrollHeight + 16);
+          this.updateObjectEl(obj);
+        }
       });
+
       ta.addEventListener('blur', () => {
         if (this.editingId === obj.id) {
           this.stopEditing();
@@ -244,40 +210,17 @@ export class ObjectsManager {
       el.appendChild(wrap);
     }
 
-    // Lock badge
     const lockBadge = document.createElement('div');
     lockBadge.className = 'lock-indicator hidden';
     lockBadge.textContent = '🔒';
     el.appendChild(lockBadge);
 
-    // Handles container
-    for (const pos of ['nw', 'ne', 'sw', 'se']) {
-      const h = document.createElement('div');
-      h.className = `resize-handle ${pos} hidden`;
-      h.dataset.handle = pos;
-      el.appendChild(h);
-    }
-    const rot = document.createElement('div');
-    rot.className = 'rotate-handle hidden';
-    rot.dataset.handle = 'rotate';
-    el.appendChild(rot);
-
-    // Events
-    el.addEventListener('pointerdown', (e) => this._onObjectPointerDown(e, obj));
-    el.addEventListener('dblclick', (e) => {
-      if (this.getTool() !== 'select') return;
-      if ((obj.type === 'text' || obj.type === 'note') && !obj.locked) {
-        e.stopPropagation();
-        this.startEditing(obj.id);
-      }
-    });
-
     this.layerEl.appendChild(el);
     this.domMap.set(obj.id, el);
-    this._updateObjectEl(obj);
+    this.updateObjectEl(obj);
   }
 
-  _updateObjectEl(obj) {
+  updateObjectEl(obj) {
     const el = this.domMap.get(obj.id);
     if (!el) return;
 
@@ -289,6 +232,8 @@ export class ObjectsManager {
     el.style.transform = obj.rotation ? `rotate(${obj.rotation}deg)` : '';
 
     el.classList.toggle('locked', Boolean(obj.locked));
+    el.classList.toggle('editing', this.editingId === obj.id);
+
     const lockBadge = el.querySelector('.lock-indicator');
     if (lockBadge) lockBadge.classList.toggle('hidden', !obj.locked);
 
@@ -299,276 +244,100 @@ export class ObjectsManager {
       if (ta) {
         ta.style.color = obj.color || '#1f2328';
         ta.style.fontSize = `${obj.fontSize || 18}px`;
+        if (ta.value !== (obj.text || '')) ta.value = obj.text || '';
       }
     } else if (obj.type === 'text') {
       const ta = el.querySelector('.board-obj-editable');
       if (ta) {
         ta.style.color = obj.color || 'var(--default-text-color)';
         ta.style.fontSize = `${obj.fontSize || 22}px`;
+        if (ta.value !== (obj.text || '')) ta.value = obj.text || '';
       }
-    }
-
-    this._updateHandlesForEl(el, obj);
-  }
-
-  _updateHandlesForEl(el, obj) {
-    const show = obj.id === this.selectedId && !obj.locked && this.editingId !== obj.id;
-    el.querySelectorAll('.resize-handle, .rotate-handle').forEach((h) => {
-      h.classList.toggle('hidden', !show);
-    });
-  }
-
-  _updateSelectionVisuals() {
-    for (const obj of this.objects) {
-      const el = this.domMap.get(obj.id);
-      if (!el) continue;
-      el.classList.toggle('selected', obj.id === this.selectedId);
-      el.classList.toggle('editing', obj.id === this.editingId);
-      this._updateHandlesForEl(el, obj);
     }
   }
 
   startEditing(id) {
-    const obj = this.objects.find((o) => o.id === id);
-    if (!obj || obj.locked) return;
+    const obj = this.getById(id);
+    if (!obj || obj.locked || (obj.type !== 'text' && obj.type !== 'note')) return false;
+
+    if (this.editingId && this.editingId !== id) {
+      this.stopEditing();
+    }
+
     this.editingId = id;
-    this._updateSelectionVisuals();
+    this.updateObjectEl(obj);
+    this.onEditStateChange(true, id);
+
     const el = this.domMap.get(id);
     const ta = el?.querySelector('.board-obj-editable');
     if (ta) {
-      ta.focus();
-      ta.setSelectionRange(ta.value.length, ta.value.length);
+      const focusTextarea = () => {
+        if (this.editingId !== id) return;
+        ta.focus();
+        const len = ta.value.length;
+        ta.setSelectionRange(len, len);
+      };
+      focusTextarea();
+      requestAnimationFrame(focusTextarea);
     }
+    return true;
   }
 
   stopEditing() {
     if (!this.editingId) return;
     const prevId = this.editingId;
     this.editingId = null;
-    this._updateSelectionVisuals();
-    const obj = this.objects.find((o) => o.id === prevId);
-    if (obj && obj.type === 'text' && !obj.text.trim()) {
-      // Remove completely empty text box
-      this.objects = this.objects.filter((o) => o.id !== prevId);
+
+    const obj = this.getById(prevId);
+    if (obj) {
       const el = this.domMap.get(prevId);
-      if (el) el.remove();
-      this.domMap.delete(prevId);
-      if (this.selectedId === prevId) this.select(null);
+      const ta = el?.querySelector('.board-obj-editable');
+      if (ta) obj.text = ta.value;
+
+      if (obj.type === 'text' && !obj.text.trim()) {
+        // Remove empty text box when user finishes without typing
+        this.removeIds(new Set([prevId]));
+      } else {
+        this.updateObjectEl(obj);
+      }
     }
+
+    this.onEditStateChange(false, prevId);
     this.onMutate('edit-text');
   }
 
-  _onObjectPointerDown(e, obj) {
-    if (e.button !== 0) return;
-    if (this.getTool() !== 'select' || this.viewport.spacePressed) return;
-    if (this.editingId === obj.id) {
-      e.stopPropagation();
-      return;
-    }
-
-    e.stopPropagation();
-    this.select(obj.id);
-
-    if (obj.locked) return;
-
-    const handle = e.target.dataset?.handle;
-    if (handle === 'rotate') {
-      const cx = obj.x + obj.w / 2;
-      const cy = obj.y + obj.h / 2;
-      const pt = this.viewport.screenToWorld(e.clientX, e.clientY);
-      const startAngle = Math.atan2(pt.y - cy, pt.x - cx) * (180 / Math.PI);
-      this.interaction = {
-        mode: 'rotate',
-        obj,
-        cx,
-        cy,
-        startAngle,
-        origRotation: obj.rotation || 0,
-        moved: false
-      };
-      return;
-    }
-
-    if (handle) {
-      this.interaction = {
-        mode: 'resize',
-        handle,
-        obj,
-        startClientX: e.clientX,
-        startClientY: e.clientY,
-        origX: obj.x,
-        origY: obj.y,
-        origW: obj.w,
-        origH: obj.h,
-        moved: false
-      };
-      return;
-    }
-
-    this.interaction = {
-      mode: 'drag',
-      obj,
-      startClientX: e.clientX,
-      startClientY: e.clientY,
-      origX: obj.x,
-      origY: obj.y,
-      moved: false
+  getObjectBounds(obj) {
+    return {
+      minX: obj.x,
+      minY: obj.y,
+      maxX: obj.x + obj.w,
+      maxY: obj.y + obj.h
     };
   }
 
-  _bindGlobalPointer() {
-    window.addEventListener('pointermove', (e) => {
-      if (!this.interaction) return;
-      const it = this.interaction;
-      const obj = it.obj;
-
-      if (it.mode === 'drag') {
-        const dx = (e.clientX - it.startClientX) / this.viewport.zoom;
-        const dy = (e.clientY - it.startClientY) / this.viewport.zoom;
-        if (Math.abs(dx) > 1 || Math.abs(dy) > 1) it.moved = true;
-        obj.x = Math.round(it.origX + dx);
-        obj.y = Math.round(it.origY + dy);
-        this._updateObjectEl(obj);
-      } else if (it.mode === 'resize') {
-        const dx = (e.clientX - it.startClientX) / this.viewport.zoom;
-        const dy = (e.clientY - it.startClientY) / this.viewport.zoom;
-        it.moved = true;
-
-        let newX = it.origX;
-        let newY = it.origY;
-        let newW = it.origW;
-        let newH = it.origH;
-        const keepRatio = obj.type === 'image' && !e.shiftKey;
-        const ratio = obj.aspectRatio || (it.origW / it.origH);
-
-        if (it.handle.includes('e')) newW = Math.max(40, it.origW + dx);
-        if (it.handle.includes('s')) newH = Math.max(36, it.origH + dy);
-        if (it.handle.includes('w')) {
-          newW = Math.max(40, it.origW - dx);
-          newX = it.origX + (it.origW - newW);
-        }
-        if (it.handle.includes('n')) {
-          newH = Math.max(36, it.origH - dy);
-          newY = it.origY + (it.origH - newH);
-        }
-
-        if (keepRatio) {
-          const adjustedH = Math.max(30, Math.round(newW / ratio));
-          if (it.handle.includes('n')) {
-            newY = it.origY + (it.origH - adjustedH);
-          }
-          newH = adjustedH;
-        }
-
-        obj.x = Math.round(newX);
-        obj.y = Math.round(newY);
-        obj.w = Math.round(newW);
-        obj.h = Math.round(newH);
-        this._updateObjectEl(obj);
-      } else if (it.mode === 'rotate') {
-        const pt = this.viewport.screenToWorld(e.clientX, e.clientY);
-        const angle = Math.atan2(pt.y - it.cy, pt.x - it.cx) * (180 / Math.PI);
-        let next = Math.round(it.origRotation + (angle - it.startAngle));
-        if (e.shiftKey) next = Math.round(next / 15) * 15;
-        obj.rotation = next;
-        it.moved = true;
-        this._updateObjectEl(obj);
+  hitTest(wx, wy) {
+    // Check from topmost zIndex downward
+    const sorted = [...this.objects].sort((a, b) => (b.zIndex || 0) - (a.zIndex || 0));
+    for (const o of sorted) {
+      // Transform point into object's unrotated local space
+      const cx = o.x + o.w / 2;
+      const cy = o.y + o.h / 2;
+      let lx = wx;
+      let ly = wy;
+      if (o.rotation) {
+        const rad = (-o.rotation * Math.PI) / 180;
+        const cos = Math.cos(rad);
+        const sin = Math.sin(rad);
+        const dx = wx - cx;
+        const dy = wy - cy;
+        lx = cx + dx * cos - dy * sin;
+        ly = cy + dx * sin + dy * cos;
       }
-    });
-
-    window.addEventListener('pointerup', () => {
-      if (!this.interaction) return;
-      const moved = this.interaction.moved;
-      this.interaction = null;
-      if (moved) {
-        this.onMutate('transform');
+      if (lx >= o.x && lx <= o.x + o.w && ly >= o.y && ly <= o.y + o.h) {
+        return o;
       }
-    });
-  }
-
-  _renderContextBar() {
-    const obj = this.getSelected();
-    if (!obj) {
-      this.toolbarEl.classList.add('hidden');
-      this.toolbarEl.innerHTML = '';
-      return;
     }
-
-    this.toolbarEl.classList.remove('hidden');
-    this.toolbarEl.innerHTML = '';
-
-    const addBtn = (label, title, onClick, cls = '') => {
-      const btn = document.createElement('button');
-      btn.className = `ctx-btn ${cls}`;
-      btn.textContent = label;
-      btn.title = title;
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        onClick();
-      });
-      this.toolbarEl.appendChild(btn);
-    };
-
-    addBtn(
-      obj.locked ? '🔓 Розблокувати' : '🔒 Закріпити',
-      'Заблокувати, щоб не рухалося під час вправи',
-      () => this.toggleLockSelected(),
-      obj.locked ? 'active' : ''
-    );
-
-    if (!obj.locked) {
-      addBtn('⬆️', 'На передній план', () => this.bringToFrontSelected());
-      addBtn('⬇️', 'На задній план (під інші картинки)', () => this.sendToBackSelected());
-
-      if (obj.type === 'text' || obj.type === 'note') {
-        addBtn('A−', 'Зменшити шрифт', () => {
-          obj.fontSize = Math.max(12, (obj.fontSize || 18) - 2);
-          this._updateObjectEl(obj);
-          this.onMutate('font-size');
-        });
-        addBtn('A+', 'Збільшити шрифт', () => {
-          obj.fontSize = Math.min(72, (obj.fontSize || 18) + 2);
-          this._updateObjectEl(obj);
-          this.onMutate('font-size');
-        });
-      }
-
-      if (obj.type === 'note') {
-        NOTE_COLORS.forEach((c) => {
-          const sw = document.createElement('button');
-          sw.className = 'ctx-color';
-          sw.style.backgroundColor = c.bg;
-          sw.title = 'Колір стікера';
-          sw.addEventListener('click', (e) => {
-            e.stopPropagation();
-            obj.bg = c.bg;
-            obj.color = c.text;
-            this._updateObjectEl(obj);
-            this.onMutate('note-color');
-          });
-          this.toolbarEl.appendChild(sw);
-        });
-      }
-
-      if (obj.type === 'text') {
-        ['#f3f5f9', '#18202c', '#ff5c5c', '#ffe066', '#4cd964', '#5b8def'].forEach((col) => {
-          const sw = document.createElement('button');
-          sw.className = 'ctx-color';
-          sw.style.backgroundColor = col;
-          sw.title = 'Колір тексту';
-          sw.addEventListener('click', (e) => {
-            e.stopPropagation();
-            obj.color = col;
-            this._updateObjectEl(obj);
-            this.onMutate('text-color');
-          });
-          this.toolbarEl.appendChild(sw);
-        });
-      }
-
-      addBtn('📋', 'Дублювати (Ctrl+D)', () => this.duplicateSelected());
-      addBtn('🗑️', 'Видалити (Delete)', () => this.deleteSelected(), 'danger');
-    }
+    return null;
   }
 
   getBounds() {

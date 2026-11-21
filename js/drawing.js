@@ -1,4 +1,4 @@
-// Vector SVG drawing layer: Pen, Highlighter, Shapes, Eraser, Clear Drawings
+// Vector SVG drawing layer: Pen, Highlighter, Shapes, Eraser + Select/Move/Scale support
 
 import { uid } from './config.js';
 
@@ -42,6 +42,7 @@ export class DrawingManager {
     this.onMutate = onMutate;
 
     this.strokes = [];
+    this.elMap = new Map();
     this.color = '#ff5c5c';
     this.width = 5;
 
@@ -59,12 +60,42 @@ export class DrawingManager {
     return this.strokes;
   }
 
+  getById(id) {
+    return this.strokes.find((s) => s.id === id) || null;
+  }
+
   setColor(c) {
     this.color = c;
   }
 
   setWidth(w) {
     this.width = w;
+  }
+
+  addRawStrokes(list) {
+    for (const s of list) {
+      this.strokes.push(s);
+      const el = this._createSvgElement(s);
+      if (el) {
+        this.strokesGroup.appendChild(el);
+        this.elMap.set(s.id, el);
+      }
+    }
+  }
+
+  removeIds(idSet) {
+    let removed = false;
+    this.strokes = this.strokes.filter((s) => {
+      if (idSet.has(s.id)) {
+        const el = this.elMap.get(s.id);
+        if (el) el.remove();
+        this.elMap.delete(s.id);
+        removed = true;
+        return false;
+      }
+      return true;
+    });
+    return removed;
   }
 
   clearAllDrawings() {
@@ -93,6 +124,7 @@ export class DrawingManager {
         color: this.color,
         width: tool === 'highlighter' ? Math.max(18, this.width * 3.5) : this.width,
         opacity: tool === 'highlighter' ? 0.36 : 1,
+        locked: false,
         points: [[x, y]]
       };
     } else if (['line', 'arrow', 'rect', 'ellipse'].includes(tool)) {
@@ -102,6 +134,7 @@ export class DrawingManager {
         color: this.color,
         width: this.width,
         opacity: 1,
+        locked: false,
         x1: x,
         y1: y,
         x2: x,
@@ -161,7 +194,10 @@ export class DrawingManager {
 
     this.strokes.push(finished);
     const el = this._createSvgElement(finished);
-    if (el) this.strokesGroup.appendChild(el);
+    if (el) {
+      this.strokesGroup.appendChild(el);
+      this.elMap.set(finished.id, el);
+    }
     this.onMutate('draw');
   }
 
@@ -170,7 +206,8 @@ export class DrawingManager {
     let removed = false;
 
     this.strokes = this.strokes.filter((s) => {
-      const hit = this._hitTestStroke(s, wx, wy, radius);
+      if (s.locked) return true;
+      const hit = this.hitTestStroke(s, wx, wy, radius);
       if (hit) removed = true;
       return !hit;
     });
@@ -181,7 +218,18 @@ export class DrawingManager {
     }
   }
 
-  _hitTestStroke(s, wx, wy, radius) {
+  hitTest(wx, wy) {
+    const radius = Math.max(8, 10 / this.viewport.zoom);
+    // Search from topmost stroke backward
+    for (let i = this.strokes.length - 1; i >= 0; i--) {
+      if (this.hitTestStroke(this.strokes[i], wx, wy, radius)) {
+        return this.strokes[i];
+      }
+    }
+    return null;
+  }
+
+  hitTestStroke(s, wx, wy, radius) {
     const tol = radius + (s.width || 4) / 2;
     if (s.points) {
       if (s.points.length === 1) {
@@ -225,6 +273,90 @@ export class DrawingManager {
     return false;
   }
 
+  getStrokeBounds(s) {
+    const pad = Math.max(6, (s.width || 4) / 2 + 2);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    if (s.points) {
+      for (const [x, y] of s.points) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    } else {
+      minX = Math.min(s.x1, s.x2);
+      maxX = Math.max(s.x1, s.x2);
+      minY = Math.min(s.y1, s.y2);
+      maxY = Math.max(s.y1, s.y2);
+    }
+    return {
+      minX: minX - pad,
+      minY: minY - pad,
+      maxX: maxX + pad,
+      maxY: maxY + pad
+    };
+  }
+
+  applyTranslationFromSnapshot(stroke, origSnap, dx, dy) {
+    if (stroke.points && origSnap.points) {
+      stroke.points = origSnap.points.map(([x, y]) => [
+        Math.round((x + dx) * 10) / 10,
+        Math.round((y + dy) * 10) / 10
+      ]);
+    } else {
+      stroke.x1 = Math.round((origSnap.x1 + dx) * 10) / 10;
+      stroke.y1 = Math.round((origSnap.y1 + dy) * 10) / 10;
+      stroke.x2 = Math.round((origSnap.x2 + dx) * 10) / 10;
+      stroke.y2 = Math.round((origSnap.y2 + dy) * 10) / 10;
+    }
+    this.updateStrokeEl(stroke);
+  }
+
+  applyScaleFromSnapshot(stroke, origSnap, origBox, newBox) {
+    const ow = Math.max(1, origBox.maxX - origBox.minX);
+    const oh = Math.max(1, origBox.maxY - origBox.minY);
+    const nw = Math.max(8, newBox.maxX - newBox.minX);
+    const nh = Math.max(8, newBox.maxY - newBox.minY);
+    const mapX = (x) => Math.round((newBox.minX + ((x - origBox.minX) / ow) * nw) * 10) / 10;
+    const mapY = (y) => Math.round((newBox.minY + ((y - origBox.minY) / oh) * nh) * 10) / 10;
+
+    if (stroke.points && origSnap.points) {
+      stroke.points = origSnap.points.map(([x, y]) => [mapX(x), mapY(y)]);
+    } else {
+      stroke.x1 = mapX(origSnap.x1);
+      stroke.y1 = mapY(origSnap.y1);
+      stroke.x2 = mapX(origSnap.x2);
+      stroke.y2 = mapY(origSnap.y2);
+    }
+    this.updateStrokeEl(stroke);
+  }
+
+  translateStrokeInPlace(stroke, dx, dy) {
+    if (stroke.points) {
+      stroke.points = stroke.points.map(([x, y]) => [
+        Math.round((x + dx) * 10) / 10,
+        Math.round((y + dy) * 10) / 10
+      ]);
+    } else {
+      stroke.x1 = Math.round((stroke.x1 + dx) * 10) / 10;
+      stroke.y1 = Math.round((stroke.y1 + dy) * 10) / 10;
+      stroke.x2 = Math.round((stroke.x2 + dx) * 10) / 10;
+      stroke.y2 = Math.round((stroke.y2 + dy) * 10) / 10;
+    }
+  }
+
+  updateStrokeEl(s) {
+    const oldEl = this.elMap.get(s.id);
+    const newEl = this._createSvgElement(s);
+    if (!newEl) return;
+    if (oldEl && oldEl.parentNode) {
+      oldEl.replaceWith(newEl);
+    } else {
+      this.strokesGroup.appendChild(newEl);
+    }
+    this.elMap.set(s.id, newEl);
+  }
+
   _renderActive() {
     this.activeGroup.innerHTML = '';
     if (!this.currentStroke) return;
@@ -234,10 +366,14 @@ export class DrawingManager {
 
   renderAll() {
     this.strokesGroup.innerHTML = '';
+    this.elMap.clear();
     const frag = document.createDocumentFragment();
     for (const s of this.strokes) {
       const el = this._createSvgElement(s);
-      if (el) frag.appendChild(el);
+      if (el) {
+        frag.appendChild(el);
+        this.elMap.set(s.id, el);
+      }
     }
     this.strokesGroup.appendChild(frag);
   }
@@ -331,19 +467,11 @@ export class DrawingManager {
     if (!this.strokes.length) return null;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const s of this.strokes) {
-      if (s.points) {
-        for (const [x, y] of s.points) {
-          minX = Math.min(minX, x);
-          minY = Math.min(minY, y);
-          maxX = Math.max(maxX, x);
-          maxY = Math.max(maxY, y);
-        }
-      } else {
-        minX = Math.min(minX, s.x1, s.x2);
-        minY = Math.min(minY, s.y1, s.y2);
-        maxX = Math.max(maxX, s.x1, s.x2);
-        maxY = Math.max(maxY, s.y1, s.y2);
-      }
+      const b = this.getStrokeBounds(s);
+      minX = Math.min(minX, b.minX);
+      minY = Math.min(minY, b.minY);
+      maxX = Math.max(maxX, b.maxX);
+      maxY = Math.max(maxY, b.maxY);
     }
     return { minX, minY, maxX, maxY };
   }

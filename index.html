@@ -65,27 +65,36 @@
         </div>
       </header>
 
-      <!-- Canvas Viewport -->
-      <div id="viewport" class="viewport bg-dark pattern-dots" tabindex="0">
+      <!-- Canvas Viewport (NO tabindex so it never steals focus from text inputs) -->
+      <div id="viewport" class="viewport bg-dark pattern-dots">
         <div id="world" class="world">
           <div id="objects-layer" class="objects-layer"></div>
           <svg id="drawing-layer" class="drawing-layer" xmlns="http://www.w3.org/2000/svg">
-            <defs>
-              <marker id="arrowhead-preview" markerWidth="10" markerHeight="7" refX="8" refY="3.5" orient="auto" markerUnits="strokeWidth">
-                <polygon points="0 0, 10 3.5, 0 7" fill="currentColor"></polygon>
-              </marker>
-            </defs>
             <g id="strokes-group"></g>
             <g id="active-stroke-group"></g>
           </svg>
+          <!-- Unified Selection Overlay inside World -->
+          <div id="selection-layer" class="selection-layer">
+            <div id="selection-items-outlines"></div>
+            <div id="selection-box" class="selection-box hidden">
+              <div class="resize-handle nw" data-handle="nw"></div>
+              <div class="resize-handle ne" data-handle="ne"></div>
+              <div class="resize-handle sw" data-handle="sw"></div>
+              <div class="resize-handle se" data-handle="se"></div>
+              <div class="rotate-handle hidden" data-handle="rotate" title="Повернути (Shift — крок 15°)"></div>
+            </div>
+          </div>
         </div>
 
-        <!-- Floating Context Bar for Selected Object -->
+        <!-- Marquee Selection Rectangle (viewport coordinates) -->
+        <div id="marquee-box" class="marquee-box hidden"></div>
+
+        <!-- Floating Context Bar for Selected Object(s) / Drawing(s) -->
         <div id="object-toolbar" class="object-toolbar hidden"></div>
 
         <!-- Empty hint -->
         <div id="empty-hint" class="empty-hint hidden">
-          Натисніть <b>Ctrl+V</b>, щоб вставити картинку або скріншот, перетягніть файл сюди чи виберіть інструмент унизу
+          <b>Ctrl+V</b> — вставити картинку або текст · <b>Рамка мишкою</b> — виділити кілька елементів · <b>Права кнопка / Пробіл</b> — рухати полотно
         </div>
       </div>
 
@@ -99,10 +108,10 @@
         </div>
 
         <div class="toolbar-dock">
-          <button class="tool-btn active" data-tool="select" title="Вибір і переміщення (V)">
+          <button class="tool-btn active" data-tool="select" title="Вибір, рамка виділення і переміщення (V)">
             <span class="tool-icon">🖱️</span><span class="tool-label">Вибір</span>
           </button>
-          <button class="tool-btn" data-tool="pan" title="Рухати полотно (H або Пробіл)">
+          <button class="tool-btn" data-tool="pan" title="Рухати полотно (H, Пробіл або права кнопка миші)">
             <span class="tool-icon">✋</span><span class="tool-label">Рука</span>
           </button>
 
@@ -135,10 +144,10 @@
 
           <div class="divider-v"></div>
 
-          <button class="tool-btn" data-tool="text" title="Текст (T)">
+          <button class="tool-btn" data-tool="text" title="Текст — натисніть і клікніть на дошку (T)">
             <span class="tool-icon">T</span><span class="tool-label">Текст</span>
           </button>
-          <button class="tool-btn" data-tool="note" title="Стікер (N)">
+          <button class="tool-btn" data-tool="note" title="Стікер — натисніть і клікніть на дошку (N)">
             <span class="tool-icon">📝</span><span class="tool-label">Стікер</span>
           </button>
           <button id="btn-upload-image" class="tool-btn" title="Додати картинку з комп'ютера (або Ctrl+V)">

@@ -7,6 +7,8 @@ export const STORAGE_KEYS = {
   LOCAL_BOARD_PREFIX: 'whiteboard_local_board_'
 };
 
+export const CLIPBOARD_MARKER_PREFIX = '__WB_INTERNAL_CLIPBOARD__:';
+
 export const DEFAULT_GH_CONFIG = {
   owner: 'olgazheltvai2',
   repo: 'whiteboard-data',
