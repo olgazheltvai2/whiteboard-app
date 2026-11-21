@@ -1,4 +1,4 @@
-// Infinite canvas pan, zoom, background grid (incl. Propysy) & camera sync
+// Infinite canvas: mouse wheel, 2-finger pinch-zoom & pan, cross-device camera fitting
 
 export class ViewportController {
   constructor(viewportEl, worldEl, onZoomChange = () => {}, onViewChange = () => {}) {
@@ -10,16 +10,21 @@ export class ViewportController {
     this.x = 0;
     this.y = 0;
     this.zoom = 1;
-    this.minZoom = 0.15;
+    this.minZoom = 0.12;
     this.maxZoom = 4.5;
     this.cameraLocked = false;
 
     this.isPanning = false;
+    this._panPointerId = null;
     this.panStartX = 0;
     this.panStartY = 0;
     this.panOriginX = 0;
     this.panOriginY = 0;
     this.spacePressed = false;
+
+    // Multi-touch pinch state
+    this.isPinching = false;
+    this._pinchData = null;
 
     this._bindEvents();
     this.apply(false);
@@ -27,8 +32,9 @@ export class ViewportController {
 
   setCameraLocked(locked) {
     this.cameraLocked = Boolean(locked);
-    if (this.cameraLocked && this.isPanning) {
+    if (this.cameraLocked) {
       this.endPan();
+      this.endPinch();
     }
   }
 
@@ -45,6 +51,11 @@ export class ViewportController {
       this.zoomAt(sx, sy, this.zoom * factor);
     }, { passive: false });
 
+    // Prevent native Safari iPad pinch-to-zoom page distortion
+    this.viewportEl.addEventListener('gesturestart', (e) => e.preventDefault());
+    this.viewportEl.addEventListener('gesturechange', (e) => e.preventDefault());
+    this.viewportEl.addEventListener('gestureend', (e) => e.preventDefault());
+
     this.viewportEl.addEventListener('contextmenu', (e) => {
       if (this._didRightDrag) {
         e.preventDefault();
@@ -52,6 +63,8 @@ export class ViewportController {
       }
     });
   }
+
+  // --- Single-pointer Pan ---
 
   startPan(clientX, clientY, pointerId, isRightButton = false) {
     if (this.cameraLocked) return;
@@ -66,8 +79,9 @@ export class ViewportController {
     this.viewportEl.classList.add('cursor-panning');
   }
 
-  movePan(clientX, clientY) {
+  movePan(clientX, clientY, pointerId = null) {
     if (!this.isPanning || this.cameraLocked) return;
+    if (pointerId !== null && this._panPointerId !== null && pointerId !== this._panPointerId) return;
     const dx = clientX - this.panStartX;
     const dy = clientY - this.panStartY;
     if (this._isRightPan && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
@@ -78,12 +92,57 @@ export class ViewportController {
     this.apply(true);
   }
 
-  endPan() {
+  endPan(pointerId = null) {
     if (!this.isPanning) return;
+    if (pointerId !== null && this._panPointerId !== null && pointerId !== this._panPointerId) return;
     this.isPanning = false;
     this._panPointerId = null;
     this.viewportEl.classList.remove('cursor-panning');
   }
+
+  // --- Two-Finger Pinch Zoom + Pan (Tablets & Phones) ---
+
+  startPinch(p1, p2) {
+    if (this.cameraLocked) return;
+    this.endPan();
+    const rect = this.viewportEl.getBoundingClientRect();
+    const mx = (p1.x + p2.x) / 2 - rect.left;
+    const my = (p1.y + p2.y) / 2 - rect.top;
+    const dist = Math.max(10, Math.hypot(p2.x - p1.x, p2.y - p1.y));
+    const worldAnchorX = (mx - this.x) / this.zoom;
+    const worldAnchorY = (my - this.y) / this.zoom;
+
+    this.isPinching = true;
+    this._pinchData = {
+      startDist: dist,
+      startZoom: this.zoom,
+      worldAnchorX,
+      worldAnchorY
+    };
+  }
+
+  movePinch(p1, p2) {
+    if (!this.isPinching || !this._pinchData || this.cameraLocked) return;
+    const rect = this.viewportEl.getBoundingClientRect();
+    const mx = (p1.x + p2.x) / 2 - rect.left;
+    const my = (p1.y + p2.y) / 2 - rect.top;
+    const dist = Math.max(10, Math.hypot(p2.x - p1.x, p2.y - p1.y));
+
+    const ratio = dist / this._pinchData.startDist;
+    const nextZoom = Math.min(this.maxZoom, Math.max(this.minZoom, this._pinchData.startZoom * ratio));
+
+    this.zoom = nextZoom;
+    this.x = mx - this._pinchData.worldAnchorX * nextZoom;
+    this.y = my - this._pinchData.worldAnchorY * nextZoom;
+    this.apply(true);
+  }
+
+  endPinch() {
+    this.isPinching = false;
+    this._pinchData = null;
+  }
+
+  // --- Zoom & Cross-Device Camera Fitting ---
 
   zoomAt(screenX, screenY, nextZoom) {
     if (this.cameraLocked) return;
@@ -114,12 +173,35 @@ export class ViewportController {
     this.apply(notify);
   }
 
-  setCenterWorld(cx, cy, zoom = 1, notify = false) {
+  // Returns teacher's full visible world area so phones & tablets fit the exact same content!
+  getCameraState() {
     const rect = this.viewportEl.getBoundingClientRect();
-    const clamped = Math.min(this.maxZoom, Math.max(this.minZoom, zoom));
-    const nx = rect.width / 2 - cx * clamped;
-    const ny = rect.height / 2 - cy * clamped;
-    this.setView(nx, ny, clamped, notify);
+    const w = Math.max(100, rect.width);
+    const h = Math.max(100, rect.height);
+    return {
+      cx: (w / 2 - this.x) / this.zoom,
+      cy: (h / 2 - this.y) / this.zoom,
+      viewW: w / this.zoom,
+      viewH: h / this.zoom,
+      zoom: this.zoom
+    };
+  }
+
+  // Fits the teacher's visible world rectangle neatly into ANY student screen (phone / tablet / PC)
+  fitWorldRect(cx, cy, viewW, viewH, fallbackZoom = 1) {
+    const rect = this.viewportEl.getBoundingClientRect();
+    const sw = Math.max(100, rect.width);
+    const sh = Math.max(100, rect.height);
+
+    let targetZoom = fallbackZoom;
+    if (viewW > 40 && viewH > 40) {
+      // Leave tiny breathing room (0.96) so edges aren't cut off by bottom toolbar
+      targetZoom = Math.min((sw * 0.98) / viewW, (sh * 0.94) / viewH);
+    }
+    const clamped = Math.min(this.maxZoom, Math.max(this.minZoom, targetZoom));
+    const nx = sw / 2 - cx * clamped;
+    const ny = sh / 2 - cy * clamped;
+    this.setView(nx, ny, clamped, false);
   }
 
   centerOnOrigin() {
@@ -134,7 +216,7 @@ export class ViewportController {
       this.centerOnOrigin();
       return;
     }
-    const pad = 64;
+    const pad = Math.min(56, Math.min(rect.width, rect.height) * 0.12);
     const bw = Math.max(bounds.maxX - bounds.minX, 120);
     const bh = Math.max(bounds.maxY - bounds.minY, 120);
     const z = Math.min(

@@ -17,6 +17,7 @@ export class LiveSessionManager {
     cursorsLayerEl,
     onRemoteObjects,
     onRemoteStrokes,
+    onRemoteLiveStrokes,
     onRemoteMeta,
     onRemoteCamera,
     onStudentsChange,
@@ -26,6 +27,7 @@ export class LiveSessionManager {
     this.cursorsLayerEl = cursorsLayerEl;
     this.onRemoteObjects = onRemoteObjects;
     this.onRemoteStrokes = onRemoteStrokes;
+    this.onRemoteLiveStrokes = onRemoteLiveStrokes || (() => {});
     this.onRemoteMeta = onRemoteMeta;
     this.onRemoteCamera = onRemoteCamera;
     this.onStudentsChange = onStudentsChange;
@@ -116,7 +118,7 @@ export class LiveSessionManager {
 
   // --- TEACHER: Host a single board live ---
 
-  async startHosting({ databaseURL, board, storage, centerWorld, zoom }) {
+  async startHosting({ databaseURL, board, storage, cameraState }) {
     const db = await this._loadFirebase(databaseURL);
     this._cleanupListeners();
 
@@ -157,9 +159,11 @@ export class LiveSessionManager {
         startedAt: Date.now()
       },
       camera: {
-        cx: Math.round(centerWorld.x),
-        cy: Math.round(centerWorld.y),
-        zoom: Number(zoom.toFixed(3)),
+        cx: Math.round(cameraState.cx),
+        cy: Math.round(cameraState.cy),
+        viewW: Math.round(cameraState.viewW),
+        viewH: Math.round(cameraState.viewH),
+        zoom: Number(cameraState.zoom.toFixed(3)),
         seq: this.cameraSeq,
         force: true
       },
@@ -225,7 +229,11 @@ export class LiveSessionManager {
       this._renderRemoteCursors(this.students, null);
     });
 
-    this.unsubscribers.push(unsubObj, unsubStr, unsubStu);
+    const unsubLiveStr = this.fb.onValue(this.fb.ref(db, `${base}/liveStrokes`), (snap) => {
+      this.onRemoteLiveStrokes(snap.val() || {}, this.clientId);
+    });
+
+    this.unsubscribers.push(unsubObj, unsubStr, unsubStu, unsubLiveStr);
   }
 
   async stopHosting() {
@@ -266,16 +274,16 @@ export class LiveSessionManager {
     }
   }
 
-  async setFollowCamera(enabled, centerWorld, zoom) {
+  async setFollowCamera(enabled, cameraState) {
     if (!this.isActive() || this.role !== 'teacher') return;
     this.followCamera = Boolean(enabled);
     await this.fb.set(this.fb.ref(this.db, `rooms/${this.roomId}/meta/followCamera`), this.followCamera);
     if (this.followCamera) {
-      await this.pushCamera(centerWorld, zoom, true);
+      await this.pushCamera(cameraState, true);
     }
   }
 
-  async pushCamera(centerWorld, zoom, force = false) {
+  async pushCamera(cameraState, force = false) {
     if (!this.isActive() || this.role !== 'teacher') return;
     const now = Date.now();
     if (!force && now - this.lastCameraSentAt < 70) return;
@@ -283,9 +291,11 @@ export class LiveSessionManager {
     if (force) this.cameraSeq += 1;
 
     await this.fb.set(this.fb.ref(this.db, `rooms/${this.roomId}/camera`), {
-      cx: Math.round(centerWorld.x),
-      cy: Math.round(centerWorld.y),
-      zoom: Number(zoom.toFixed(3)),
+      cx: Math.round(cameraState.cx),
+      cy: Math.round(cameraState.cy),
+      viewW: Math.round(cameraState.viewW),
+      viewH: Math.round(cameraState.viewH),
+      zoom: Number(cameraState.zoom.toFixed(3)),
       seq: this.cameraSeq,
       force: Boolean(force)
     });
@@ -332,6 +342,7 @@ export class LiveSessionManager {
       joinedAt: Date.now()
     });
     this.fb.onDisconnect(myRef).remove();
+    this.fb.onDisconnect(this.fb.ref(db, `rooms/${roomId}/liveStrokes/${this.clientId}`)).remove();
 
     const base = `rooms/${roomId}`;
 
@@ -346,7 +357,9 @@ export class LiveSessionManager {
       }
       this.globalPerm = m.globalPerm || 'edit';
       this.followCamera = Boolean(m.followCamera);
-      this.onRemoteMeta(m, this.getEffectiveStudentPerm());
+      const eff = this.getEffectiveStudentPerm();
+      this._lastStudentPerm = eff;
+      this.onRemoteMeta(m, eff);
     });
 
     const unsubObj = this.fb.onValue(this.fb.ref(db, `${base}/objects`), (snap) => {
@@ -370,13 +383,18 @@ export class LiveSessionManager {
     let latestStudents = {};
     let latestTeacherCursor = null;
 
+    this._lastStudentPerm = null;
     const unsubStu = this.fb.onValue(this.fb.ref(db, `${base}/students`), (snap) => {
       latestStudents = snap.val() || {};
       this.students = latestStudents;
-      this.onRemoteMeta({
-        globalPerm: this.globalPerm,
-        followCamera: this.followCamera
-      }, this.getEffectiveStudentPerm());
+      const eff = this.getEffectiveStudentPerm();
+      if (eff !== this._lastStudentPerm) {
+        this._lastStudentPerm = eff;
+        this.onRemoteMeta({
+          globalPerm: this.globalPerm,
+          followCamera: this.followCamera
+        }, eff);
+      }
       this._renderRemoteCursors(latestStudents, latestTeacherCursor);
     });
 
@@ -385,7 +403,11 @@ export class LiveSessionManager {
       this._renderRemoteCursors(latestStudents, latestTeacherCursor);
     });
 
-    this.unsubscribers.push(unsubMeta, unsubObj, unsubStr, unsubCam, unsubStu, unsubTCur);
+    const unsubLiveStr = this.fb.onValue(this.fb.ref(db, `${base}/liveStrokes`), (snap) => {
+      this.onRemoteLiveStrokes(snap.val() || {}, this.clientId);
+    });
+
+    this.unsubscribers.push(unsubMeta, unsubObj, unsubStr, unsubCam, unsubStu, unsubTCur, unsubLiveStr);
     return meta;
   }
 
@@ -479,6 +501,16 @@ export class LiveSessionManager {
   }
 
   // --- LIVE CURSORS ---
+
+  pushLiveStroke(strokeOrNull) {
+    if (!this.isActive()) return;
+    const path = `rooms/${this.roomId}/liveStrokes/${this.clientId}`;
+    if (!strokeOrNull) {
+      this.fb.remove(this.fb.ref(this.db, path)).catch(() => {});
+    } else {
+      this.fb.set(this.fb.ref(this.db, path), stripUndefined(strokeOrNull)).catch(() => {});
+    }
+  }
 
   sendCursor(worldPt) {
     if (!this.isActive()) return;

@@ -35,11 +35,13 @@ function distToSegment(px, py, x1, y1, x2, y2) {
 }
 
 export class DrawingManager {
-  constructor({ strokesLayer, activeGroup, viewport, onMutate, getNextZIndex }) {
+  constructor({ strokesLayer, activeGroup, remoteActiveGroup, viewport, onMutate, onLiveStroke, getNextZIndex }) {
     this.strokesLayer = strokesLayer;
     this.activeGroup = activeGroup;
+    this.remoteActiveGroup = remoteActiveGroup;
     this.viewport = viewport;
     this.onMutate = onMutate;
+    this.onLiveStroke = onLiveStroke || (() => {});
     this.getNextZIndex = getNextZIndex || (() => this._localMaxZ() + 1);
 
     this.strokes = [];
@@ -50,6 +52,37 @@ export class DrawingManager {
     this.currentStroke = null;
     this.isErasing = false;
     this.erasedIds = [];
+    this._lastLiveEmitAt = 0;
+  }
+
+  renderRemoteActiveStrokes(liveStrokesMap, myClientId) {
+    if (!this.remoteActiveGroup) return;
+    this.remoteActiveGroup.innerHTML = '';
+    if (!liveStrokesMap) return;
+    const frag = document.createDocumentFragment();
+    for (const [cid, s] of Object.entries(liveStrokesMap)) {
+      if (cid === myClientId || !s) continue;
+      const el = this._createSvgShape(s);
+      if (el) frag.appendChild(el);
+    }
+    this.remoteActiveGroup.appendChild(frag);
+  }
+
+  cancelActivePointer() {
+    if (this.currentStroke) {
+      this.currentStroke = null;
+      this.activeGroup.innerHTML = '';
+      this.onLiveStroke(null);
+    }
+    this.isErasing = false;
+    this.erasedIds = [];
+  }
+
+  _emitLiveStroke(force = false) {
+    const now = Date.now();
+    if (!force && now - this._lastLiveEmitAt < 65) return;
+    this._lastLiveEmitAt = now;
+    this.onLiveStroke(this.currentStroke);
   }
 
   _localMaxZ() {
@@ -184,6 +217,7 @@ export class DrawingManager {
     }
 
     this._renderActive();
+    this._emitLiveStroke(true);
   }
 
   movePointer(worldPt) {
@@ -203,11 +237,13 @@ export class DrawingManager {
       if (Math.hypot(x - prev[0], y - prev[1]) >= minStep) {
         pts.push([x, y]);
         this._renderActive();
+        this._emitLiveStroke(false);
       }
     } else {
       this.currentStroke.x2 = x;
       this.currentStroke.y2 = y;
       this._renderActive();
+      this._emitLiveStroke(false);
     }
   }
 
@@ -226,6 +262,7 @@ export class DrawingManager {
     const finished = this.currentStroke;
     this.currentStroke = null;
     this.activeGroup.innerHTML = '';
+    this.onLiveStroke(null);
 
     if (!finished.points) {
       if (Math.hypot(finished.x2 - finished.x1, finished.y2 - finished.y1) < 3) {

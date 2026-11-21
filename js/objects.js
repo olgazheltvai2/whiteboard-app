@@ -86,7 +86,7 @@ export class ObjectsManager {
       zIndex: this.getNextZIndex(),
       locked: false,
       text: initialText,
-      fontSize: fontFamily === 'propysy' ? 28 : 22,
+      fontSize: (fontFamily === 'propysy' || fontFamily === 'propysy-bold') ? 28 : 22,
       fontFamily: fontFamily || 'sans',
       color: defaultColor
     };
@@ -109,7 +109,7 @@ export class ObjectsManager {
       zIndex: this.getNextZIndex(),
       locked: false,
       text: '',
-      fontSize: fontFamily === 'propysy' ? 24 : 18,
+      fontSize: (fontFamily === 'propysy' || fontFamily === 'propysy-bold') ? 24 : 18,
       fontFamily: fontFamily || 'sans',
       bg: palette.bg,
       color: palette.text
@@ -284,6 +284,7 @@ export class ObjectsManager {
           ? (obj.color || '#1f2328')
           : (obj.color || 'var(--default-text-color)');
         ta.style.fontFamily = preset.family;
+        ta.style.fontWeight = String(preset.weight || 400);
         ta.style.lineHeight = String(preset.lineHeight);
         ta.style.fontSize = `${Math.round((obj.fontSize || (obj.type === 'note' ? 18 : 22)) * preset.sizeScale)}px`;
         if (ta.value !== (obj.text || '')) ta.value = obj.text || '';

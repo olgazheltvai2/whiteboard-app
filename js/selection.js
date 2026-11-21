@@ -17,6 +17,7 @@ export class SelectionManager {
     objects,
     drawing,
     onMutate,
+    onLiveTransform,
     onToast,
     isTeacher = () => true,
     canEditObjects = () => true,
@@ -32,6 +33,7 @@ export class SelectionManager {
     this.objects = objects;
     this.drawing = drawing;
     this.onMutate = onMutate;
+    this.onLiveTransform = onLiveTransform || (() => {});
     this.onToast = onToast;
     this.isTeacher = isTeacher;
     this.canEditObjects = canEditObjects;
@@ -43,8 +45,51 @@ export class SelectionManager {
     this.clipboard = null;
     this.clipboardStamp = null;
     this.pasteCount = 0;
+    this._lastLiveSyncAt = 0;
 
     this._bindEvents();
+  }
+
+  cancelActiveInteraction() {
+    if (!this.interaction) return;
+    const it = this.interaction;
+    this.interaction = null;
+    if (it.mode === 'marquee') {
+      this.marqueeEl.classList.add('hidden');
+      this.selectedIds = new Set(it.baseSelection);
+      this.render();
+      return;
+    }
+    // Restore original positions if a 2-finger pinch interrupted a 1-frame accidental drag
+    if (it.snapshots && it.moved) {
+      for (const entry of it.snapshots) {
+        Object.assign(entry.item, entry.snap);
+        if (entry.kind === 'object') this.objects.updateObjectEl(entry.item);
+        else this.drawing.updateStrokeEl(entry.item);
+      }
+      this.renderOverlayOnly();
+    } else if (it.obj && it.moved) {
+      it.obj.rotation = it.origRotation;
+      this.objects.updateObjectEl(it.obj);
+      this.renderOverlayOnly();
+    }
+  }
+
+  _emitLiveTransform(it) {
+    const now = Date.now();
+    if (now - this._lastLiveSyncAt < 65) return;
+    this._lastLiveSyncAt = now;
+    const changedObjectIds = [];
+    const changedStrokeIds = [];
+    if (it.snapshots) {
+      it.snapshots.forEach((s) => {
+        if (s.kind === 'object') changedObjectIds.push(s.item.id);
+        else changedStrokeIds.push(s.item.id);
+      });
+    } else if (it.obj) {
+      changedObjectIds.push(it.obj.id);
+    }
+    this.onLiveTransform({ changedObjectIds, changedStrokeIds });
   }
 
   getActiveInteractionIds() {
@@ -198,6 +243,11 @@ export class SelectionManager {
 
     if (!hit) {
       if (!e.shiftKey) this.clear();
+      // On touch screens (tablets/phones), dragging empty space smoothly pans the board!
+      if (e.pointerType === 'touch') {
+        this.viewport.startPan(e.clientX, e.clientY, e.pointerId, false);
+        return;
+      }
       this._startMarquee(e.clientX, e.clientY, e.shiftKey);
       return;
     }
@@ -308,8 +358,10 @@ export class SelectionManager {
   _bindEvents() {
     this.selectionBoxEl.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
-      if (this.viewport.spacePressed || !this.canEditObjects()) return;
-      e.stopPropagation();
+      if (this.viewport.spacePressed || this.viewport.isPinching || !this.canEditObjects()) return;
+      // Let touch pointerdown bubble to app touch-tracker for 2-finger pinch detection
+      if (e.pointerType !== 'touch') e.stopPropagation();
+      else e._handledBySelectionBox = true;
 
       const handle = e.target.dataset?.handle;
       if (handle === 'rotate') {
@@ -349,7 +401,7 @@ export class SelectionManager {
     });
 
     window.addEventListener('pointermove', (e) => {
-      if (!this.interaction) return;
+      if (!this.interaction || this.viewport.isPinching) return;
       const it = this.interaction;
 
       if (it.mode === 'marquee') {
@@ -386,6 +438,7 @@ export class SelectionManager {
           }
         }
         this.renderOverlayOnly();
+        if (it.moved) this._emitLiveTransform(it);
       } else if (it.mode === 'resize') {
         const dx = (e.clientX - it.startClientX) / this.viewport.zoom;
         const dy = (e.clientY - it.startClientY) / this.viewport.zoom;
@@ -431,6 +484,7 @@ export class SelectionManager {
           }
         }
         this.renderOverlayOnly();
+        if (it.moved) this._emitLiveTransform(it);
       } else if (it.mode === 'rotate') {
         const pt = this.viewport.screenToWorld(e.clientX, e.clientY);
         const angle = Math.atan2(pt.y - it.cy, pt.x - it.cx) * (180 / Math.PI);
@@ -440,6 +494,7 @@ export class SelectionManager {
         it.moved = true;
         this.objects.updateObjectEl(it.obj);
         this.renderOverlayOnly();
+        if (it.moved) this._emitLiveTransform(it);
       }
     });
 

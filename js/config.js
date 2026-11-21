@@ -1,4 +1,4 @@
-// App constants, font presets, GitHub & Firebase configuration
+// App constants, Ukrainian Propysy font presets, GitHub & Firebase configuration
 
 export const STORAGE_KEYS = {
   GH_CONFIG: 'whiteboard_gh_config_v1',
@@ -23,29 +23,41 @@ export const FONT_PRESETS = [
     id: 'sans',
     label: 'Друкований',
     family: '"Segoe UI", system-ui, -apple-system, Roboto, sans-serif',
+    weight: 500,
     lineHeight: 1.35,
     sizeScale: 1
   },
   {
     id: 'propysy',
-    label: '✍️ Прописний',
+    label: '✍️ Прописи',
     family: '"SchoolPropysy", "Marck Script", cursive',
-    lineHeight: 1.5,
-    sizeScale: 1.25
+    weight: 400,
+    lineHeight: 1.55,
+    sizeScale: 1.35
+  },
+  {
+    id: 'propysy-bold',
+    label: '✍️ Прописи (жирний)',
+    family: '"SchoolPropysy", "Marck Script", cursive',
+    weight: 700,
+    lineHeight: 1.55,
+    sizeScale: 1.35
   },
   {
     id: 'hand',
     label: 'Рукописний',
     family: '"Caveat", cursive',
+    weight: 500,
     lineHeight: 1.3,
-    sizeScale: 1.22
+    sizeScale: 1.25
   },
   {
     id: 'neat',
     label: 'Зошитовий',
     family: '"Bad Script", cursive',
+    weight: 400,
     lineHeight: 1.45,
-    sizeScale: 1.1
+    sizeScale: 1.12
   }
 ];
 
@@ -123,11 +135,8 @@ export function isGitHubConfigured(cfg) {
 export function extractDatabaseUrl(input) {
   const raw = (input || '').trim();
   if (!raw) return '';
-  // Allow user to paste either a direct URL or a full Firebase config snippet
-  const match = raw.match(/https:\/\/[a-zA-Z0-9.-]+(?:firebaseio\.com|firebasedatabase\.app)[^\s"'`,}]*/);
-  if (match) {
-    return match[0].replace(/\/+$/, '');
-  }
+  const match = raw.match(/https:\/\/[a-zA-Z0-9.-]+(?:firebaseio\.com|firebasedatabase\.app)/);
+  if (match) return match[0];
   return raw.replace(/\/+$/, '');
 }
 

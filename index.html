@@ -2,9 +2,8 @@
 <html lang="uk">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>Легка Дошка Уроків</title>
-  <!-- Ukrainian-capable cursive & handwriting fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Bad+Script&family=Caveat:wght@500;700&family=Marck+Script&display=swap" rel="stylesheet" />
@@ -75,7 +74,7 @@
         </div>
       </header>
 
-      <!-- Live Session Control Bar (Teacher Only, visible when Live Session is active) -->
+      <!-- Live Session Control Bar (Teacher Only) -->
       <div id="live-bar" class="live-bar hidden">
         <div class="live-bar-group">
           <span class="live-dot-badge"><span class="live-dot"></span> В ефірі</span>
@@ -92,7 +91,7 @@
         </div>
 
         <div class="live-bar-group">
-          <button id="btn-live-call" class="btn btn-secondary btn-sm" title="Миттєво перенести екрани всіх учнів на те місце, куди дивитесь ви">📍 Покликати</button>
+          <button id="btn-live-call" class="btn btn-secondary btn-sm" title="Перенести екрани всіх учнів точно на ваш вигляд (підлаштовується під телефон/планшет)">📍 Покликати</button>
           <button id="btn-live-follow" class="btn btn-secondary btn-sm" title="Прив'язати екрани учнів до вашої камери, щоб ніхто не загубився">🧲 Прив'язати екран</button>
         </div>
 
@@ -111,15 +110,13 @@
       <!-- Canvas Viewport -->
       <div id="viewport" class="viewport bg-dark pattern-dots">
         <div id="world" class="world">
-          <!-- Objects and Strokes share #world stacking context so z-index interleaves freely! -->
           <div id="objects-layer" class="objects-layer"></div>
           <div id="strokes-layer" class="strokes-layer"></div>
           <svg id="active-drawing-layer" class="active-drawing-layer" xmlns="http://www.w3.org/2000/svg">
+            <g id="remote-active-strokes-group"></g>
             <g id="active-stroke-group"></g>
           </svg>
-          <!-- Live Remote Cursors -->
           <div id="cursors-layer" class="cursors-layer"></div>
-          <!-- Unified Selection Overlay inside World -->
           <div id="selection-layer" class="selection-layer">
             <div id="selection-items-outlines"></div>
             <div id="selection-box" class="selection-box hidden">
@@ -145,7 +142,7 @@
 
         <!-- Empty hint -->
         <div id="empty-hint" class="empty-hint hidden">
-          <b>Ctrl+V</b> — вставити картинку або текст · <b>Рамка мишкою</b> — виділити кілька елементів · <b>Права кнопка / Пробіл</b> — рухати полотно
+          <b>Ctrl+V</b> — вставити картинку або текст · <b>Рамка мишкою</b> — виділити кілька елементів · <b>Два пальці / Права кнопка</b> — рух і зум
         </div>
       </div>
 
@@ -158,26 +155,27 @@
           <div id="width-swatches" class="width-swatches"></div>
         </div>
 
-        <!-- Sub-toolbar for Text tool font/color -->
+        <!-- Sub-toolbar for Text tool font -->
         <div id="text-options" class="draw-options hidden">
           <span class="sub-label">Шрифт:</span>
           <select id="select-default-font" class="select-compact" title="Шрифт для нового тексту">
             <option value="sans">Друкований</option>
-            <option value="propysy">✍️ Прописний</option>
+            <option value="propysy">✍️ Прописи</option>
+            <option value="propysy-bold">✍️ Прописи (жирний)</option>
             <option value="hand">Рукописний</option>
             <option value="neat">Зошитовий</option>
           </select>
         </div>
 
-        <div class="toolbar-dock">
+        <div id="toolbar-dock" class="toolbar-dock">
           <button class="tool-btn active" data-tool="select" title="Вибір, рамка виділення і переміщення (V)">
             <span class="tool-icon">🖱️</span><span class="tool-label">Вибір</span>
           </button>
-          <button class="tool-btn" data-tool="pan" title="Рухати полотно (H, Пробіл або права кнопка миші)">
+          <button class="tool-btn" data-tool="pan" title="Рухати полотно (H, Пробіл, права кнопка або 2 пальці)">
             <span class="tool-icon">✋</span><span class="tool-label">Рука</span>
           </button>
 
-          <div class="divider-v"></div>
+          <div class="divider-v" data-div="nav"></div>
 
           <button class="tool-btn" data-tool="pen" title="Ручка (P)">
             <span class="tool-icon">✏️</span><span class="tool-label">Ручка</span>
@@ -189,7 +187,7 @@
             <span class="tool-icon">🧽</span><span class="tool-label">Гумка</span>
           </button>
 
-          <div class="divider-v"></div>
+          <div class="divider-v" data-div="draw"></div>
 
           <button class="tool-btn" data-tool="line" title="Лінія (L)">
             <span class="tool-icon">╱</span><span class="tool-label">Лінія</span>
@@ -204,7 +202,7 @@
             <span class="tool-icon">◯</span><span class="tool-label">Коло</span>
           </button>
 
-          <div class="divider-v"></div>
+          <div class="divider-v" data-div="shapes"></div>
 
           <button class="tool-btn" data-tool="text" title="Текст — натисніть і клікніть на дошку (T)">
             <span class="tool-icon">T</span><span class="tool-label">Текст</span>
@@ -228,7 +226,7 @@
         </div>
       </div>
 
-      <!-- Zoom Controls (Bottom Right) -->
+      <!-- Zoom Controls -->
       <div id="zoom-controls" class="zoom-controls">
         <button id="btn-zoom-out" class="icon-btn" title="Зменшити">−</button>
         <button id="btn-zoom-reset" class="zoom-readout" title="Скинути масштаб на 100%">100%</button>
@@ -281,11 +279,11 @@
       <div id="tab-firebase" class="modal-tab-panel hidden">
         <div class="modal-body">
           <p class="modal-desc">
-            Потрібен лише для синхронної роботи з учнем або мінігрупою. Вставте посилання на вашу <b>Firebase Realtime Database</b> (або весь блок <code>firebaseConfig</code>).
+            Потрібен лише для синхронної роботи з учнем або мінігрупою. Вставте посилання на вашу <b>Firebase Realtime Database</b>.
           </p>
 
           <label class="field-label">Посилання Realtime Database (databaseURL)</label>
-          <input id="cfg-fb-url" class="input" type="text" placeholder="https://your-project-default-rtdb.europe-west1.firebasedatabase.app" autocomplete="off" />
+          <input id="cfg-fb-url" class="input" type="text" placeholder="https://whiteboard-live-ba3e1-default-rtdb.europe-west1.firebasedatabase.app" autocomplete="off" />
 
           <p class="modal-hint">
             У Firebase Console → <b>Realtime Database → Rules</b> дозвольте доступ до вузлів <code>rooms/$roomId</code> і <code>_ping</code>.

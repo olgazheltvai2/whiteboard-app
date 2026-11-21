@@ -1,9 +1,12 @@
 /* Main Layout */
 #app {
   display: flex;
-  width: 100vw;
+  width: 100%;
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
+  position: fixed;
+  inset: 0;
 }
 
 .hidden {
@@ -710,15 +713,20 @@
 /* Bottom Dock */
 .dock-wrap {
   position: absolute;
-  bottom: 14px;
+  bottom: max(12px, env(safe-area-inset-bottom, 12px));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  z-index: 25;
-  max-width: calc(100% - 24px);
+  gap: 7px;
+  z-index: 35;
+  max-width: calc(100% - 16px);
+  pointer-events: none;
+}
+
+.dock-wrap > * {
+  pointer-events: auto;
 }
 
 .draw-options {
@@ -728,8 +736,11 @@
   padding: 6px 10px;
   display: flex;
   align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
   gap: 8px;
   box-shadow: var(--shadow-float);
+  max-width: 100%;
 }
 
 .color-swatches, .width-swatches {
@@ -968,11 +979,121 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
-@media (max-width: 900px) {
-  .tool-label { display: none; }
-  .tool-btn { min-width: 38px; padding: 8px; }
-  .zoom-controls { bottom: 72px; }
+/* Touch-friendly handles & controls on tablets/phones */
+@media (pointer: coarse) {
+  .resize-handle {
+    width: 22px;
+    height: 22px;
+  }
+  .resize-handle.nw { left: -12px; top: -12px; }
+  .resize-handle.ne { right: -12px; top: -12px; }
+  .resize-handle.sw { left: -12px; bottom: -12px; }
+  .resize-handle.se { right: -12px; bottom: -12px; }
+
+  .rotate-handle {
+    width: 24px;
+    height: 24px;
+    top: -36px;
+  }
+  .rotate-handle::after {
+    top: 22px;
+  }
+
+  .swatch-btn {
+    width: 26px;
+    height: 26px;
+  }
+  .width-btn {
+    width: 32px;
+    height: 32px;
+  }
 }
+
+@media (max-width: 960px) {
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 60;
+    box-shadow: var(--shadow-float);
+  }
+  .tool-label { display: none; }
+  .tool-btn {
+    min-width: 42px;
+    min-height: 40px;
+    padding: 8px 6px;
+    flex-shrink: 0;
+  }
+  .tool-icon { font-size: 18px; }
+  .toolbar-dock {
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .toolbar-dock::-webkit-scrollbar { display: none; }
+
+  /* Place zoom controls vertically on the right edge so they NEVER cover the bottom toolbar */
+  .zoom-controls {
+    right: 8px;
+    bottom: auto;
+    top: 50%;
+    transform: translateY(-50%);
+    flex-direction: column;
+    padding: 4px 3px;
+  }
+  .zoom-readout {
+    min-width: 36px;
+    font-size: 10.5px;
+    padding: 2px;
+  }
+
+  .topbar {
+    height: auto;
+    min-height: 44px;
+    padding: 6px 8px;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .board-title-input {
+    font-size: 14px;
+    max-width: 160px;
+    min-width: 80px;
+    padding: 3px 6px;
+  }
+  .student-follow-banner {
+    top: 8px;
+    right: 8px;
+    font-size: 11px;
+    padding: 4px 9px;
+  }
+}
+
+@media (max-width: 520px) {
+  .topbar-right .sync-status {
+    font-size: 11px;
+    padding: 3px 7px;
+  }
+  .student-badge {
+    font-size: 11px;
+    padding: 2px 7px;
+  }
+  .board-title-input {
+    max-width: 110px;
+  }
+  .tool-btn {
+    min-width: 38px;
+    min-height: 38px;
+    padding: 6px 5px;
+  }
+  .draw-options {
+    padding: 5px 8px;
+    gap: 6px;
+  }
+  .draw-options .divider-v {
+    display: none;
+  }
+}
+
 
 /* Student Mode Visibility */
 body.student-mode .teacher-only,

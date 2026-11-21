@@ -43,6 +43,12 @@ class WhiteboardApp {
     this.inviteDbUrl = params.get('db');
     this.isStudentMode = Boolean(this.inviteRoomId && this.inviteDbUrl);
     this.studentPerm = 'edit';
+    this.lastRemoteCamera = null;
+
+    // Multi-touch tracker for 2-finger pinch-to-zoom & pan on tablets/phones
+    this.activeTouches = new Map();
+    this.pinchCooldown = false;
+    this.activeDrawPointerId = null;
 
     this._initModules();
     this._initUI();
@@ -88,9 +94,8 @@ class WhiteboardApp {
         $('btn-zoom-reset').textContent = `${Math.round(zoom * 100)}%`;
       },
       () => {
-        // Teacher camera broadcast while magnet-follow is enabled
         if (this.live && this.live.isActive() && this.live.isTeacher() && this.live.followCamera) {
-          this.live.pushCamera(this.viewport.getCenterWorld(), this.viewport.zoom, false);
+          this.live.pushCamera(this.viewport.getCameraState(), false);
         }
       }
     );
@@ -114,8 +119,10 @@ class WhiteboardApp {
     this.drawing = new DrawingManager({
       strokesLayer: $('strokes-layer'),
       activeGroup: $('active-stroke-group'),
+      remoteActiveGroup: $('remote-active-strokes-group'),
       viewport: this.viewport,
       getNextZIndex: () => this.getNextZIndex(),
+      onLiveStroke: (s) => this.live && this.live.pushLiveStroke(s),
       onMutate: (reason, meta) => this._onBoardMutated(reason, meta)
     });
 
@@ -132,6 +139,7 @@ class WhiteboardApp {
       canEditObjects: () => this._canEditObjects(),
       getNextZIndex: () => this.getNextZIndex(),
       getMinZIndex: () => this.getMinZIndex(),
+      onLiveTransform: (meta) => this._pushLiveDeltaOnly(meta),
       onMutate: (reason, meta) => this._onBoardMutated(reason, meta),
       onToast: (msg) => this.toast(msg)
     });
@@ -150,9 +158,11 @@ class WhiteboardApp {
       cursorsLayerEl: $('cursors-layer'),
       onRemoteObjects: (remoteMap) => this._applyRemoteObjects(remoteMap),
       onRemoteStrokes: (remoteMap) => this._applyRemoteStrokes(remoteMap),
+      onRemoteLiveStrokes: (map, myId) => this.drawing.renderRemoteActiveStrokes(map, myId),
       onRemoteMeta: (meta, effPerm) => this._applyRemoteMeta(meta, effPerm),
       onRemoteCamera: (cam) => {
-        this.viewport.setCenterWorld(cam.cx, cam.cy, cam.zoom || 1, false);
+        this.lastRemoteCamera = cam;
+        this.viewport.fitWorldRect(cam.cx, cam.cy, cam.viewW, cam.viewH, cam.zoom || 1);
       },
       onStudentsChange: (students) => this._renderStudentsList(students),
       onSessionEnded: () => {
@@ -302,7 +312,7 @@ class WhiteboardApp {
     });
     $('btn-live-call').addEventListener('click', async (e) => {
       e.currentTarget.blur();
-      await this.live.pushCamera(this.viewport.getCenterWorld(), this.viewport.zoom, true);
+      await this.live.pushCamera(this.viewport.getCameraState(), true);
       this.toast('📍 Екрани учнів перенесено до вас');
     });
     $('btn-live-follow').addEventListener('click', async (e) => {
@@ -310,7 +320,7 @@ class WhiteboardApp {
       btn.blur();
       const next = !this.live.followCamera;
       btn.classList.toggle('follow-active', next);
-      await this.live.setFollowCamera(next, this.viewport.getCenterWorld(), this.viewport.zoom);
+      await this.live.setFollowCamera(next, this.viewport.getCameraState());
       this.toast(next ? '🧲 Екрани учнів прив’язано до вашого' : 'Екрани учнів відв’язано');
     });
     $('btn-live-students').addEventListener('click', (e) => {
@@ -358,11 +368,25 @@ class WhiteboardApp {
       btn.addEventListener('click', () => $(btn.dataset.close).classList.add('hidden'));
     });
 
-    // Viewport Pointer Interactions
+    // Collapse sidebar automatically on narrow screens in teacher mode
+    if (!this.isStudentMode && window.innerWidth <= 960) {
+      $('sidebar').classList.add('collapsed');
+    }
+
+    // Re-fit teacher camera when student rotates phone/tablet or resizes window
+    window.addEventListener('resize', () => {
+      if (this.isStudentMode && this.lastRemoteCamera && this.live.followCamera) {
+        const c = this.lastRemoteCamera;
+        this.viewport.fitWorldRect(c.cx, c.cy, c.viewW, c.viewH, c.zoom || 1);
+      }
+    });
+
+    // Viewport Pointer Interactions (Mouse + Stylus + Multi-Touch Pinch/Pan)
     const vp = $('viewport');
     vp.addEventListener('pointerdown', (e) => this._onViewportPointerDown(e));
     window.addEventListener('pointermove', (e) => this._onViewportPointerMove(e));
-    window.addEventListener('pointerup', () => this._onViewportPointerUp());
+    window.addEventListener('pointerup', (e) => this._onViewportPointerUp(e));
+    window.addEventListener('pointercancel', (e) => this._onViewportPointerUp(e));
 
     // Drag & Drop images (Teacher only)
     vp.addEventListener('dragover', (e) => e.preventDefault());
@@ -542,8 +566,7 @@ class WhiteboardApp {
           strokes: this.drawing.getStrokes()
         },
         storage: this.storage,
-        centerWorld: this.viewport.getCenterWorld(),
-        zoom: this.viewport.zoom
+        cameraState: this.viewport.getCameraState()
       });
 
       $('live-bar').classList.remove('hidden');
@@ -663,7 +686,9 @@ class WhiteboardApp {
       this._applyBoardBgUI();
     }
 
+    const prevPerm = this.studentPerm;
     this.studentPerm = effPerm;
+    const permChanged = prevPerm !== effPerm;
     const follow = Boolean(meta.followCamera);
     this.viewport.setCameraLocked(follow);
     $('student-follow-banner').classList.toggle('hidden', !follow);
@@ -682,6 +707,8 @@ class WhiteboardApp {
 
     // Enforce tool availability for student
     const dock = $('dock-wrap');
+    const drawTools = ['pen', 'highlighter', 'eraser', 'line', 'arrow', 'rect', 'ellipse'];
+
     if (effPerm === 'view') {
       this.selection.clear();
       this.objects.stopEditing();
@@ -697,18 +724,34 @@ class WhiteboardApp {
       if (effPerm === 'view') {
         allow = t === 'pan' && !follow;
       } else if (effPerm === 'draw') {
-        allow = ['pen', 'highlighter', 'eraser', 'line', 'arrow', 'rect', 'ellipse'].includes(t) || (t === 'pan' && !follow);
+        allow = drawTools.includes(t) || (t === 'pan' && !follow);
       } else {
         allow = !(t === 'pan' && follow);
       }
       btn.classList.toggle('perm-hidden', !allow);
     });
 
-    if (effPerm === 'draw' && ['select', 'text', 'note'].includes(this.currentTool)) {
+    // Cleanly hide redundant dividers when tools are restricted
+    const divNav = document.querySelector('[data-div="nav"]');
+    const divDraw = document.querySelector('[data-div="draw"]');
+    const divShapes = document.querySelector('[data-div="shapes"]');
+    if (divNav) divNav.classList.toggle('hidden', effPerm === 'view' || (effPerm === 'draw' && follow));
+    if (divDraw) divDraw.classList.toggle('hidden', effPerm === 'view');
+    if (divShapes) divShapes.classList.toggle('hidden', effPerm !== 'edit');
+
+    // Ensure an actual drawing tool (pen) is active when entering 'draw' mode
+    if (effPerm === 'draw') {
       this.selection.clear();
       this.objects.stopEditing();
-      this.setTool('pen');
+      if (!drawTools.includes(this.currentTool)) {
+        if (this.currentTool !== 'pan' || follow || permChanged) {
+          this.setTool('pen');
+        }
+      }
+    } else if (effPerm === 'edit' && (permChanged || follow) && this.currentTool === 'pan') {
+      this.setTool('select');
     }
+
     this.selection.render();
   }
 
@@ -822,6 +865,12 @@ class WhiteboardApp {
     if (this.isStudentMode) return;
     const next = this.history.redo();
     if (next) this._restoreSnapshot(next);
+  }
+
+  _pushLiveDeltaOnly(meta) {
+    if (!this.live.isActive() || !meta) return;
+    const maps = this._buildStateMaps();
+    this.live.pushMutation({ ...maps, ...meta }).catch(() => {});
   }
 
   _onBoardMutated(reason, meta = null) {
@@ -953,6 +1002,27 @@ class WhiteboardApp {
     if (e.target.closest('#object-toolbar')) return;
     if (e.target.closest('.board-obj.editing .board-obj-editable')) return;
 
+    // Multi-touch tracking for 2-finger pinch-zoom & pan on tablets/phones
+    if (e.pointerType === 'touch') {
+      this.activeTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.activeTouches.size >= 2) {
+        // Cancel any accidental 1-finger stroke/drag started milliseconds earlier
+        if (this._isDrawingPointer) {
+          this._isDrawingPointer = false;
+          this.activeDrawPointerId = null;
+          this.drawing.cancelActivePointer();
+        }
+        this.selection.cancelActiveInteraction();
+        this.pinchCooldown = true;
+        const pts = [...this.activeTouches.values()];
+        this.viewport.startPinch(pts[0], pts[1]);
+        return;
+      }
+    }
+
+    // If selectionBox already initiated drag/resize on this touch, don't double-process
+    if (e._handledBySelectionBox) return;
+
     if (document.activeElement && document.activeElement !== document.body) {
       document.activeElement.blur();
     }
@@ -995,31 +1065,54 @@ class WhiteboardApp {
 
     if (!this._canDraw()) return;
     this._isDrawingPointer = true;
+    this.activeDrawPointerId = e.pointerId;
     this.drawing.startPointer(this.currentTool, worldPt);
   }
 
   _onViewportPointerMove(e) {
-    if (this.live.isActive()) {
+    if (e.pointerType === 'touch' && this.activeTouches.has(e.pointerId)) {
+      this.activeTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.viewport.isPinching && this.activeTouches.size >= 2) {
+        const pts = [...this.activeTouches.values()];
+        this.viewport.movePinch(pts[0], pts[1]);
+        return;
+      }
+      if (this.pinchCooldown) return;
+    }
+
+    if (this.live.isActive() && !this.viewport.isPinching) {
       const worldPt = this.viewport.screenToWorld(e.clientX, e.clientY);
       this.live.sendCursor(worldPt);
     }
+
     if (this.viewport.isPanning) {
-      this.viewport.movePan(e.clientX, e.clientY);
+      this.viewport.movePan(e.clientX, e.clientY, e.pointerId);
       return;
     }
-    if (this._isDrawingPointer) {
+    if (this._isDrawingPointer && (this.activeDrawPointerId === null || e.pointerId === this.activeDrawPointerId)) {
       const worldPt = this.viewport.screenToWorld(e.clientX, e.clientY);
       this.drawing.movePointer(worldPt);
     }
   }
 
-  _onViewportPointerUp() {
+  _onViewportPointerUp(e) {
+    if (e && e.pointerType === 'touch') {
+      this.activeTouches.delete(e.pointerId);
+      if (this.viewport.isPinching && this.activeTouches.size < 2) {
+        this.viewport.endPinch();
+      }
+      if (this.activeTouches.size === 0) {
+        this.pinchCooldown = false;
+      }
+    }
+
     if (this.viewport.isPanning) {
-      this.viewport.endPan();
+      this.viewport.endPan(e ? e.pointerId : null);
       return;
     }
-    if (this._isDrawingPointer) {
+    if (this._isDrawingPointer && (!e || this.activeDrawPointerId === null || e.pointerId === this.activeDrawPointerId)) {
       this._isDrawingPointer = false;
+      this.activeDrawPointerId = null;
       this.drawing.endPointer();
     }
   }
