@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Легка Дошка Уроків</title>
+  <link rel="stylesheet" href="css/theme.css" />
+  <link rel="stylesheet" href="css/ui.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Left Sidebar: Boards List -->
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <span class="brand-icon">🎨</span>
+          <span class="brand-title">Мої дошки</span>
+        </div>
+        <button id="btn-toggle-sidebar-inner" class="icon-btn" title="Сховати панель (Tab)">⟨</button>
+      </div>
+
+      <div class="sidebar-actions">
+        <button id="btn-new-board" class="btn btn-primary full-width">+ Нова дошка</button>
+        <input id="board-search" type="text" class="input" placeholder="Пошук дошки..." autocomplete="off" />
+        <div id="folder-filters" class="folder-filters"></div>
+      </div>
+
+      <div id="boards-list" class="boards-list"></div>
+
+      <div class="sidebar-footer">
+        <button id="btn-open-settings" class="btn btn-ghost full-width">
+          ⚙️ Налаштування GitHub
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Workspace -->
+    <main id="workspace" class="workspace">
+      <!-- Top Bar -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="btn-open-sidebar" class="icon-btn" title="Показати список дошок (Tab)">☰</button>
+          <div class="board-title-wrap">
+            <input id="current-board-title" class="board-title-input" type="text" value="Нова дошка" title="Натисніть, щоб змінити назву" />
+            <span id="current-board-folder" class="folder-badge hidden"></span>
+          </div>
+        </div>
+
+        <div class="topbar-center">
+          <div class="bg-controls" title="Фон полотна">
+            <button id="btn-bg-theme" class="chip-btn" title="Темний / Світлий фон полотна">🌑 Темний</button>
+            <select id="select-bg-pattern" class="select-compact" title="Розмітка полотна">
+              <option value="dots">⠿ Крапки</option>
+              <option value="grid">▦ Клітинка</option>
+              <option value="lines">▤ Лінійка</option>
+              <option value="none">⬜ Чистий</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="topbar-right">
+          <span id="sync-status" class="sync-status status-local" title="Статус збереження">Локально</span>
+          <button id="btn-save-now" class="btn btn-secondary btn-sm" title="Зберегти зараз (Ctrl+S)">💾 Зберегти</button>
+          <button id="btn-clear-drawings" class="btn btn-danger-soft btn-sm" title="Прибрати всі малюнки, залишивши картинки й текст">🧹 Очистити малюнки</button>
+        </div>
+      </header>
+
+      <!-- Canvas Viewport -->
+      <div id="viewport" class="viewport bg-dark pattern-dots" tabindex="0">
+        <div id="world" class="world">
+          <div id="objects-layer" class="objects-layer"></div>
+          <svg id="drawing-layer" class="drawing-layer" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <marker id="arrowhead-preview" markerWidth="10" markerHeight="7" refX="8" refY="3.5" orient="auto" markerUnits="strokeWidth">
+                <polygon points="0 0, 10 3.5, 0 7" fill="currentColor"></polygon>
+              </marker>
+            </defs>
+            <g id="strokes-group"></g>
+            <g id="active-stroke-group"></g>
+          </svg>
+        </div>
+
+        <!-- Floating Context Bar for Selected Object -->
+        <div id="object-toolbar" class="object-toolbar hidden"></div>
+
+        <!-- Empty hint -->
+        <div id="empty-hint" class="empty-hint hidden">
+          Натисніть <b>Ctrl+V</b>, щоб вставити картинку або скріншот, перетягніть файл сюди чи виберіть інструмент унизу
+        </div>
+      </div>
+
+      <!-- Bottom Floating Main Toolbar -->
+      <div class="dock-wrap">
+        <!-- Sub-toolbar for drawing color/width -->
+        <div id="draw-options" class="draw-options hidden">
+          <div id="color-swatches" class="color-swatches"></div>
+          <div class="divider-v"></div>
+          <div id="width-swatches" class="width-swatches"></div>
+        </div>
+
+        <div class="toolbar-dock">
+          <button class="tool-btn active" data-tool="select" title="Вибір і переміщення (V)">
+            <span class="tool-icon">🖱️</span><span class="tool-label">Вибір</span>
+          </button>
+          <button class="tool-btn" data-tool="pan" title="Рухати полотно (H або Пробіл)">
+            <span class="tool-icon">✋</span><span class="tool-label">Рука</span>
+          </button>
+
+          <div class="divider-v"></div>
+
+          <button class="tool-btn" data-tool="pen" title="Ручка (P)">
+            <span class="tool-icon">✏️</span><span class="tool-label">Ручка</span>
+          </button>
+          <button class="tool-btn" data-tool="highlighter" title="Маркер (M)">
+            <span class="tool-icon">🖍️</span><span class="tool-label">Маркер</span>
+          </button>
+          <button class="tool-btn" data-tool="eraser" title="Гумка для малюнків (E)">
+            <span class="tool-icon">🧽</span><span class="tool-label">Гумка</span>
+          </button>
+
+          <div class="divider-v"></div>
+
+          <button class="tool-btn" data-tool="line" title="Лінія (L)">
+            <span class="tool-icon">╱</span><span class="tool-label">Лінія</span>
+          </button>
+          <button class="tool-btn" data-tool="arrow" title="Стрілка (A)">
+            <span class="tool-icon">↗</span><span class="tool-label">Стрілка</span>
+          </button>
+          <button class="tool-btn" data-tool="rect" title="Прямокутник (R)">
+            <span class="tool-icon">▭</span><span class="tool-label">Рамка</span>
+          </button>
+          <button class="tool-btn" data-tool="ellipse" title="Коло / Овал (O)">
+            <span class="tool-icon">◯</span><span class="tool-label">Коло</span>
+          </button>
+
+          <div class="divider-v"></div>
+
+          <button class="tool-btn" data-tool="text" title="Текст (T)">
+            <span class="tool-icon">T</span><span class="tool-label">Текст</span>
+          </button>
+          <button class="tool-btn" data-tool="note" title="Стікер (N)">
+            <span class="tool-icon">📝</span><span class="tool-label">Стікер</span>
+          </button>
+          <button id="btn-upload-image" class="tool-btn" title="Додати картинку з комп'ютера (або Ctrl+V)">
+            <span class="tool-icon">🖼️</span><span class="tool-label">Картинка</span>
+          </button>
+          <input id="image-file-input" type="file" accept="image/*" multiple class="hidden" />
+
+          <div class="divider-v"></div>
+
+          <button id="btn-undo" class="tool-btn" title="Скасувати (Ctrl+Z)" disabled>
+            <span class="tool-icon">↩️</span><span class="tool-label">Назад</span>
+          </button>
+          <button id="btn-redo" class="tool-btn" title="Повернути (Ctrl+Y)" disabled>
+            <span class="tool-icon">↪️</span><span class="tool-label">Вперед</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Zoom Controls (Bottom Right) -->
+      <div class="zoom-controls">
+        <button id="btn-zoom-out" class="icon-btn" title="Зменшити">−</button>
+        <button id="btn-zoom-reset" class="zoom-readout" title="Скинути масштаб на 100%">100%</button>
+        <button id="btn-zoom-in" class="icon-btn" title="Збільшити">+</button>
+        <button id="btn-zoom-fit" class="icon-btn" title="Показати весь вміст дошки">⊡</button>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modal: GitHub Settings -->
+  <div id="modal-settings" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-header">
+        <h2>Підключення до GitHub</h2>
+        <button class="icon-btn modal-close" data-close="modal-settings">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">
+          Токен зберігається <b>тільки у пам'яті цього браузера</b> і нікуди не передається, окрім вашого приватного репозиторію.
+        </p>
+
+        <label class="field-label">Логін GitHub (власник репозиторію)</label>
+        <input id="cfg-owner" class="input" type="text" placeholder="olgazheltvai2" />
+
+        <label class="field-label">Назва приватного репозиторію для даних</label>
+        <input id="cfg-repo" class="input" type="text" placeholder="whiteboard-data" />
+
+        <label class="field-label">Гілка (зазвичай main)</label>
+        <input id="cfg-branch" class="input" type="text" placeholder="main" />
+
+        <label class="field-label">Ключ доступу (Personal Access Token)</label>
+        <input id="cfg-token" class="input" type="password" placeholder="github_pat_..." autocomplete="off" />
+
+        <div id="settings-test-result" class="test-result hidden"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-test-github" class="btn btn-secondary">Перевірити зв'язок</button>
+        <button id="btn-save-settings" class="btn btn-primary">Зберегти і підключити</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Create / Edit Board -->
+  <div id="modal-board" class="modal-backdrop hidden">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h2 id="modal-board-heading">Нова дошка</h2>
+        <button class="icon-btn modal-close" data-close="modal-board">✕</button>
+      </div>
+      <div class="modal-body">
+        <label class="field-label">Назва дошки</label>
+        <input id="input-board-name" class="input" type="text" placeholder="Наприклад: 2 клас — Дроби" />
+
+        <label class="field-label">Папка / категорія (необов'язково)</label>
+        <input id="input-board-folder" class="input" type="text" list="folders-datalist" placeholder="Наприклад: Математика, УМІ, 1-2 клас" />
+        <datalist id="folders-datalist"></datalist>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost modal-close" data-close="modal-board">Скасувати</button>
+        <button id="btn-confirm-board" class="btn btn-primary">Зберегти</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

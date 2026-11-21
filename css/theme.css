@@ -1,0 +1,86 @@
+/* Theme tokens & canvas backgrounds */
+:root {
+  --ui-bg: #12141a;
+  --ui-surface: #1b1f27;
+  --ui-surface-2: #242936;
+  --ui-surface-hover: #2d3445;
+  --ui-border: #32394a;
+  --ui-text: #eef1f7;
+  --ui-text-muted: #98a2b3;
+  --accent: #5b8def;
+  --accent-hover: #477be5;
+  --danger: #e55353;
+  --danger-soft: rgba(229, 83, 83, 0.16);
+  --success: #34c38f;
+  --warning: #f1b44c;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow-float: 0 8px 28px rgba(0, 0, 0, 0.42);
+  --font-sans: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+
+  /* Dynamic viewport grid variables (updated by viewport.js) */
+  --grid-x: 0px;
+  --grid-y: 0px;
+  --grid-size: 32px;
+  --line-size: 38px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--ui-bg);
+  color: var(--ui-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Canvas Background Themes */
+.viewport.bg-dark {
+  --canvas-bg: #161920;
+  --canvas-pattern: rgba(255, 255, 255, 0.08);
+  --canvas-pattern-strong: rgba(255, 255, 255, 0.14);
+  --default-text-color: #f3f5f9;
+}
+
+.viewport.bg-light {
+  --canvas-bg: #f8f9fb;
+  --canvas-pattern: rgba(18, 25, 38, 0.11);
+  --canvas-pattern-strong: rgba(18, 25, 38, 0.17);
+  --default-text-color: #18202c;
+}
+
+.viewport {
+  background-color: var(--canvas-bg);
+  background-position: var(--grid-x) var(--grid-y);
+}
+
+.viewport.pattern-none {
+  background-image: none;
+}
+
+.viewport.pattern-dots {
+  background-image: radial-gradient(circle, var(--canvas-pattern-strong) 1.3px, transparent 1.3px);
+  background-size: var(--grid-size) var(--grid-size);
+}
+
+.viewport.pattern-grid {
+  background-image:
+    linear-gradient(to right, var(--canvas-pattern) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--canvas-pattern) 1px, transparent 1px);
+  background-size: var(--grid-size) var(--grid-size);
+}
+
+.viewport.pattern-lines {
+  background-image: linear-gradient(to bottom, var(--canvas-pattern-strong) 1px, transparent 1px);
+  background-size: 100% var(--line-size);
+}
