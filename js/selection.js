@@ -21,6 +21,7 @@ export class SelectionManager {
     onToast,
     isTeacher = () => true,
     canEditObjects = () => true,
+    canWriteText = () => true,
     getNextZIndex,
     getMinZIndex
   }) {
@@ -37,6 +38,7 @@ export class SelectionManager {
     this.onToast = onToast;
     this.isTeacher = isTeacher;
     this.canEditObjects = canEditObjects;
+    this.canWriteText = canWriteText;
     this.getNextZIndex = getNextZIndex;
     this.getMinZIndex = getMinZIndex;
 
@@ -387,15 +389,17 @@ export class SelectionManager {
     });
 
     this.viewportEl.addEventListener('dblclick', (e) => {
-      if (!this.canEditObjects()) return;
+      if (!this.canEditObjects() && !this.canWriteText()) return;
       if (e.target.closest('#object-toolbar')) return;
       if (e.target.closest('.board-obj.editing .board-obj-editable')) return;
       const pt = this.viewport.screenToWorld(e.clientX, e.clientY);
       const hitObj = this.objects.hitTest(pt.x, pt.y);
-      if (hitObj && (hitObj.type === 'text' || hitObj.type === 'note') && !hitObj.locked) {
+      if (!hitObj || hitObj.locked) return;
+      const canOpen = (hitObj.type === 'text' && this.canWriteText()) || (hitObj.type === 'note' && this.canEditObjects());
+      if (canOpen) {
         e.preventDefault();
         e.stopPropagation();
-        this.selectOnly([hitObj.id]);
+        if (this.canEditObjects()) this.selectOnly([hitObj.id]);
         this.objects.startEditing(hitObj.id);
       }
     });
@@ -815,9 +819,111 @@ export class SelectionManager {
     }
   }
 
+  _renderEditingBar(obj) {
+    this.toolbarEl.classList.remove('hidden');
+    this.toolbarEl.innerHTML = '';
+
+    // Font selector (note: changing <select> needs focus, so keep editing alive cleanly via flag)
+    const sel = document.createElement('select');
+    sel.className = 'ctx-select';
+    sel.title = 'Шрифт';
+    FONT_PRESETS.forEach((fp) => {
+      const opt = document.createElement('option');
+      opt.value = fp.id;
+      opt.textContent = fp.label;
+      sel.appendChild(opt);
+    });
+    sel.value = obj.fontFamily || 'sans';
+    sel.addEventListener('pointerdown', (e) => e.stopPropagation());
+    sel.addEventListener('change', (e) => {
+      e.stopPropagation();
+      obj.fontFamily = sel.value;
+      this.objects.updateObjectEl(obj);
+      this.objects.autoFitTextHeight(obj);
+      this.onMutate('font-family', { changedObjectIds: [obj.id] });
+      this.objects.startEditing(obj.id);
+    });
+    this.toolbarEl.appendChild(sel);
+
+    const addEditBtn = (label, title, onClick, cls = '') => {
+      const btn = document.createElement('button');
+      btn.className = `ctx-btn ${cls}`;
+      btn.textContent = label;
+      btn.title = title;
+      // preventDefault on pointerdown keeps focus inside textarea so it doesn't blur!
+      btn.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        onClick();
+      });
+      this.toolbarEl.appendChild(btn);
+    };
+
+    addEditBtn('A−', 'Зменшити шрифт', () => {
+      obj.fontSize = Math.max(12, (obj.fontSize || 22) - 2);
+      this.objects.updateObjectEl(obj);
+      this.objects.autoFitTextHeight(obj);
+      this.onMutate('font-size', { changedObjectIds: [obj.id] });
+    });
+
+    addEditBtn('A+', 'Збільшити шрифт', () => {
+      obj.fontSize = Math.min(72, (obj.fontSize || 22) + 2);
+      this.objects.updateObjectEl(obj);
+      this.objects.autoFitTextHeight(obj);
+      this.onMutate('font-size', { changedObjectIds: [obj.id] });
+    });
+
+    if (obj.type === 'text') {
+      DRAW_COLORS.forEach((col) => {
+        const sw = document.createElement('button');
+        sw.className = 'ctx-color';
+        sw.style.backgroundColor = col;
+        sw.title = 'Колір тексту';
+        sw.addEventListener('pointerdown', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        sw.addEventListener('click', (e) => {
+          e.stopPropagation();
+          obj.color = col;
+          this.objects.updateObjectEl(obj);
+          this.onMutate('recolor', { changedObjectIds: [obj.id] });
+        });
+        this.toolbarEl.appendChild(sw);
+      });
+    }
+
+    addEditBtn('🗑️', 'Видалити напис', () => {
+      const id = obj.id;
+      this.objects.editingId = null;
+      this.objects.removeIds(new Set([id]));
+      this.selectedIds.delete(id);
+      this.render();
+      this.onMutate('delete', { deletedObjectIds: [id] });
+    }, 'danger');
+
+    addEditBtn('✓ Готово', 'Завершити введення', () => {
+      this.objects.stopEditing();
+    }, 'accent');
+  }
+
   _renderContextBar() {
+    if (this.objects.isEditing()) {
+      const editingObj = this.objects.getById(this.objects.editingId);
+      if (editingObj && !editingObj.locked) {
+        this._renderEditingBar(editingObj);
+        return;
+      }
+      this.toolbarEl.classList.add('hidden');
+      this.toolbarEl.innerHTML = '';
+      return;
+    }
+
     const items = this.getSelectedItems();
-    if (!items.length || this.objects.isEditing() || !this.canEditObjects()) {
+    if (!items.length || !this.canEditObjects()) {
       this.toolbarEl.classList.add('hidden');
       this.toolbarEl.innerHTML = '';
       return;
@@ -901,7 +1007,9 @@ export class SelectionManager {
           textItems.forEach((i) => {
             i.data.fontFamily = val;
             this.objects.updateObjectEl(i.data);
+            this.objects.autoFitTextHeight(i.data);
           });
+          this.renderOverlayOnly();
           this.onMutate('font-family', this._collectMutationMeta(textItems));
         });
         this.toolbarEl.appendChild(sel);
@@ -910,14 +1018,18 @@ export class SelectionManager {
           textItems.forEach((i) => {
             i.data.fontSize = Math.max(12, (i.data.fontSize || 18) - 2);
             this.objects.updateObjectEl(i.data);
+            this.objects.autoFitTextHeight(i.data);
           });
+          this.renderOverlayOnly();
           this.onMutate('font-size', this._collectMutationMeta(textItems));
         });
         addBtn('A+', 'Збільшити шрифт', () => {
           textItems.forEach((i) => {
             i.data.fontSize = Math.min(72, (i.data.fontSize || 18) + 2);
             this.objects.updateObjectEl(i.data);
+            this.objects.autoFitTextHeight(i.data);
           });
+          this.renderOverlayOnly();
           this.onMutate('font-size', this._collectMutationMeta(textItems));
         });
       }

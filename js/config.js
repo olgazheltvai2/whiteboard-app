@@ -25,39 +25,54 @@ export const FONT_PRESETS = [
     family: '"Segoe UI", system-ui, -apple-system, Roboto, sans-serif',
     weight: 500,
     lineHeight: 1.35,
-    sizeScale: 1
+    sizeScale: 1,
+    padTop: 0.15,
+    padBottom: 0.2,
+    padX: 0.18
   },
   {
     id: 'propysy',
     label: '✍️ Прописи',
     family: '"SchoolPropysy", "Marck Script", cursive',
     weight: 400,
-    lineHeight: 1.55,
-    sizeScale: 1.35
+    lineHeight: 1.95,
+    sizeScale: 1.35,
+    padTop: 0.7,
+    padBottom: 0.85,
+    padX: 0.5
   },
   {
     id: 'propysy-bold',
     label: '✍️ Прописи (жирний)',
     family: '"SchoolPropysy", "Marck Script", cursive',
     weight: 700,
-    lineHeight: 1.55,
-    sizeScale: 1.35
+    lineHeight: 1.95,
+    sizeScale: 1.35,
+    padTop: 0.7,
+    padBottom: 0.85,
+    padX: 0.5
   },
   {
     id: 'hand',
     label: 'Рукописний',
     family: '"Caveat", cursive',
     weight: 500,
-    lineHeight: 1.3,
-    sizeScale: 1.25
+    lineHeight: 1.45,
+    sizeScale: 1.25,
+    padTop: 0.3,
+    padBottom: 0.35,
+    padX: 0.28
   },
   {
     id: 'neat',
     label: 'Зошитовий',
     family: '"Bad Script", cursive',
     weight: 400,
-    lineHeight: 1.45,
-    sizeScale: 1.12
+    lineHeight: 1.55,
+    sizeScale: 1.12,
+    padTop: 0.3,
+    padBottom: 0.35,
+    padX: 0.28
   }
 ];
 

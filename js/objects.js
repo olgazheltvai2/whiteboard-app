@@ -3,17 +3,24 @@
 import { IMAGE_LIMITS, NOTE_COLORS, getFontPreset, uid } from './config.js';
 
 export class ObjectsManager {
-  constructor({ layerEl, viewport, storage, onMutate, onEditStateChange, getNextZIndex }) {
+  constructor({ layerEl, viewport, storage, onMutate, onLiveObjectUpdate, onEditStateChange, getNextZIndex }) {
     this.layerEl = layerEl;
     this.viewport = viewport;
     this.storage = storage;
     this.onMutate = onMutate;
+    this.onLiveObjectUpdate = onLiveObjectUpdate || (() => {});
     this.onEditStateChange = onEditStateChange || (() => {});
     this.getNextZIndex = getNextZIndex || (() => this._localMaxZ() + 1);
 
     this.objects = [];
     this.editingId = null;
     this.domMap = new Map();
+    this._lastTextEmitAt = 0;
+
+    // Re-measure text heights once custom Propysy OTF fonts finish loading
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(() => this.autoFitAllTexts());
+    }
   }
 
   _localMaxZ() {
@@ -72,26 +79,37 @@ export class ObjectsManager {
   }
 
   addTextAt(worldPoint, defaultColor = '#f3f5f9', initialText = '', fontFamily = 'sans') {
+    const isPropysy = fontFamily === 'propysy' || fontFamily === 'propysy-bold';
+    const preset = getFontPreset(fontFamily || 'sans');
+    const baseSize = isPropysy ? 28 : 22;
+    const renderPx = Math.round(baseSize * preset.sizeScale);
     const lines = initialText ? initialText.split('\n').length : 1;
-    const w = initialText ? Math.min(520, Math.max(240, initialText.length * 12)) : 280;
-    const h = Math.max(70, lines * 36 + 24);
+    const w = initialText
+      ? Math.min(560, Math.max(260, initialText.length * Math.round(renderPx * 0.55) + 48))
+      : (isPropysy ? 320 : 280);
+    const vertPad = renderPx * ((preset.padTop || 0.15) + (preset.padBottom || 0.2));
+    const h = Math.max(
+      isPropysy ? 140 : 76,
+      Math.ceil(lines * renderPx * preset.lineHeight + vertPad + 20)
+    );
     const obj = {
       id: uid('txt'),
       type: 'text',
       x: Math.round(worldPoint.x - w / 2),
-      y: Math.round(worldPoint.y - 28),
+      y: Math.round(worldPoint.y - h / 2),
       w,
       h,
       rotation: 0,
       zIndex: this.getNextZIndex(),
       locked: false,
       text: initialText,
-      fontSize: (fontFamily === 'propysy' || fontFamily === 'propysy-bold') ? 28 : 22,
+      fontSize: baseSize,
       fontFamily: fontFamily || 'sans',
       color: defaultColor
     };
     this.objects.push(obj);
     this._mountObject(obj);
+    this.autoFitTextHeight(obj);
     this.onMutate('add-text', { changedObjectIds: [obj.id] });
     return obj;
   }
@@ -229,13 +247,21 @@ export class ObjectsManager {
 
       ta.addEventListener('input', () => {
         obj.text = ta.value;
-        if (obj.type === 'text' && ta.scrollHeight > ta.clientHeight) {
-          obj.h = Math.max(obj.h, ta.scrollHeight + 16);
-          this.updateObjectEl(obj);
+        if (obj.type === 'text') {
+          this.autoFitTextHeight(obj);
+        }
+        const now = Date.now();
+        if (now - this._lastTextEmitAt >= 160) {
+          this._lastTextEmitAt = now;
+          this.onLiveObjectUpdate(obj.id);
         }
       });
 
-      ta.addEventListener('blur', () => {
+      ta.addEventListener('blur', (e) => {
+        // Keep editing active if user is picking a font inside the floating toolbar
+        if (e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest('#object-toolbar')) {
+          return;
+        }
         if (this.editingId === obj.id) {
           this.stopEditing();
         }
@@ -280,15 +306,49 @@ export class ObjectsManager {
         if (wrap) wrap.style.backgroundColor = obj.bg || '#fff3a1';
       }
       if (ta) {
+        const renderPx = Math.round((obj.fontSize || (obj.type === 'note' ? 18 : 22)) * preset.sizeScale);
         ta.style.color = obj.type === 'note'
           ? (obj.color || '#1f2328')
           : (obj.color || 'var(--default-text-color)');
         ta.style.fontFamily = preset.family;
         ta.style.fontWeight = String(preset.weight || 400);
         ta.style.lineHeight = String(preset.lineHeight);
-        ta.style.fontSize = `${Math.round((obj.fontSize || (obj.type === 'note' ? 18 : 22)) * preset.sizeScale)}px`;
+        ta.style.fontSize = `${renderPx}px`;
+        // Generous internal padding inside textarea prevents OTF calligraphic ascenders/descenders (в, б, р, у, д) from ever clipping!
+        const pt = Math.round(renderPx * (preset.padTop ?? 0.15));
+        const pb = Math.round(renderPx * (preset.padBottom ?? 0.2));
+        const px = Math.round(renderPx * (preset.padX ?? 0.18));
+        ta.style.padding = `${pt}px ${px}px ${pb}px ${px}px`;
         if (ta.value !== (obj.text || '')) ta.value = obj.text || '';
       }
+    }
+  }
+
+  autoFitTextHeight(obj) {
+    if (!obj || obj.type !== 'text') return false;
+    const el = this.domMap.get(obj.id);
+    const ta = el?.querySelector('.board-obj-editable');
+    if (!ta) return false;
+    const preset = getFontPreset(obj.fontFamily || 'sans');
+    const renderPx = Math.round((obj.fontSize || 22) * preset.sizeScale);
+    const minSingleLine = Math.ceil(
+      renderPx * preset.lineHeight +
+      renderPx * ((preset.padTop ?? 0.15) + (preset.padBottom ?? 0.2)) + 16
+    );
+    const overhead = Math.max(8, el.offsetHeight - ta.clientHeight);
+    const scrollNeed = ta.scrollHeight > ta.clientHeight ? ta.scrollHeight + overhead + 4 : 0;
+    const needed = Math.max(minSingleLine, scrollNeed);
+    if (needed > obj.h) {
+      obj.h = needed;
+      el.style.height = `${obj.h}px`;
+      return true;
+    }
+    return false;
+  }
+
+  autoFitAllTexts() {
+    for (const o of this.objects) {
+      if (o.type === 'text') this.autoFitTextHeight(o);
     }
   }
 

@@ -81,6 +81,11 @@ class WhiteboardApp {
     return this.studentPerm === 'draw' || this.studentPerm === 'edit';
   }
 
+  _canWriteText() {
+    if (!this.isStudentMode) return true;
+    return this.studentPerm === 'draw' || this.studentPerm === 'edit';
+  }
+
   _canEditObjects() {
     if (!this.isStudentMode) return true;
     return this.studentPerm === 'edit';
@@ -110,6 +115,7 @@ class WhiteboardApp {
       viewport: this.viewport,
       storage: this.storage,
       getNextZIndex: () => this.getNextZIndex(),
+      onLiveObjectUpdate: (id) => this._pushLiveDeltaOnly({ changedObjectIds: [id] }),
       onMutate: (reason, meta) => this._onBoardMutated(reason, meta),
       onEditStateChange: () => {
         if (this.selection) this.selection.render();
@@ -137,6 +143,7 @@ class WhiteboardApp {
       drawing: this.drawing,
       isTeacher: () => !this.isStudentMode,
       canEditObjects: () => this._canEditObjects(),
+      canWriteText: () => this._canWriteText(),
       getNextZIndex: () => this.getNextZIndex(),
       getMinZIndex: () => this.getMinZIndex(),
       onLiveTransform: (meta) => this._pushLiveDeltaOnly(meta),
@@ -306,7 +313,7 @@ class WhiteboardApp {
         $('live-perm-group').querySelectorAll('.seg-btn').forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
         await this.live.setGlobalPermission(perm);
-        const labels = { view: '👁️ Учні лише дивляться', draw: '✏️ Учні можуть малювати', edit: '🖐️ Повний доступ для учнів' };
+        const labels = { view: '👁️ Учні лише дивляться', draw: '✏️ Учні можуть малювати і писати текст', edit: '🖐️ Повний доступ для учнів' };
         this.toast(labels[perm]);
       });
     });
@@ -698,7 +705,7 @@ class WhiteboardApp {
     const pill = $('student-perm-pill');
     const pillMap = {
       view: { text: '👁️ Тільки перегляд', cls: 'status-error' },
-      draw: { text: '✏️ Тільки малювання', cls: 'status-dirty' },
+      draw: { text: '✏️ Малювання і текст', cls: 'status-dirty' },
       edit: { text: '🖐️ Можна малювати і рухати', cls: 'status-saved' }
     };
     const info = pillMap[effPerm] || pillMap.edit;
@@ -707,7 +714,7 @@ class WhiteboardApp {
 
     // Enforce tool availability for student
     const dock = $('dock-wrap');
-    const drawTools = ['pen', 'highlighter', 'eraser', 'line', 'arrow', 'rect', 'ellipse'];
+    const drawTools = ['pen', 'highlighter', 'eraser', 'line', 'arrow', 'rect', 'ellipse', 'text'];
 
     if (effPerm === 'view') {
       this.selection.clear();
@@ -737,12 +744,11 @@ class WhiteboardApp {
     const divShapes = document.querySelector('[data-div="shapes"]');
     if (divNav) divNav.classList.toggle('hidden', effPerm === 'view' || (effPerm === 'draw' && follow));
     if (divDraw) divDraw.classList.toggle('hidden', effPerm === 'view');
-    if (divShapes) divShapes.classList.toggle('hidden', effPerm !== 'edit');
+    if (divShapes) divShapes.classList.toggle('hidden', effPerm === 'view');
 
-    // Ensure an actual drawing tool (pen) is active when entering 'draw' mode
+    // Ensure an actual drawing/text tool (pen) is active when entering 'draw' mode
     if (effPerm === 'draw') {
       this.selection.clear();
-      this.objects.stopEditing();
       if (!drawTools.includes(this.currentTool)) {
         if (this.currentTool !== 'pan' || follow || permChanged) {
           this.setTool('pen');
@@ -968,7 +974,7 @@ class WhiteboardApp {
   setTool(tool, { keepSelection = false } = {}) {
     if (this.isStudentMode) {
       if (this.studentPerm === 'view' && tool !== 'pan') return;
-      if (this.studentPerm === 'draw' && ['select', 'text', 'note'].includes(tool)) return;
+      if (this.studentPerm === 'draw' && ['select', 'note'].includes(tool)) return;
     }
 
     this.currentTool = tool;
@@ -1038,12 +1044,29 @@ class WhiteboardApp {
     const worldPt = this.viewport.screenToWorld(e.clientX, e.clientY);
 
     if (this.currentTool === 'text') {
-      if (!this._canEditObjects()) return;
+      if (!this._canWriteText()) return;
       e.preventDefault();
+      // If user was already typing in another text box, first tap outside simply finishes editing
+      if (this.objects.isEditing()) {
+        this.objects.stopEditing();
+        return;
+      }
+      // If tapping an existing unlocked text box with T, edit it instead of overlapping a new one
+      const hitExisting = this.objects.hitTest(worldPt.x, worldPt.y);
+      if (hitExisting && hitExisting.type === 'text' && !hitExisting.locked) {
+        if (this._canEditObjects()) {
+          this.setTool('select', { keepSelection: true });
+          this.selection.selectOnly([hitExisting.id]);
+        }
+        this.objects.startEditing(hitExisting.id);
+        return;
+      }
       const defColor = this.currentBoard?.bgTheme === 'light' ? '#18202c' : '#f3f5f9';
       const obj = this.objects.addTextAt(worldPt, defColor, '', this.defaultFont);
-      this.setTool('select', { keepSelection: true });
-      this.selection.selectOnly([obj.id]);
+      if (this._canEditObjects()) {
+        this.setTool('select', { keepSelection: true });
+        this.selection.selectOnly([obj.id]);
+      }
       this.objects.startEditing(obj.id);
       return;
     }
