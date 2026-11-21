@@ -618,7 +618,12 @@ class WhiteboardApp {
 
   _renderStudentsList(studentsMap) {
     const entries = Object.entries(studentsMap || {});
-    $('live-students-count').textContent = String(entries.length);
+    const btn = $('btn-live-students');
+    if (entries.length === 1) {
+      btn.textContent = `👤 ${entries[0][1].name || 'Учень'}`;
+    } else {
+      btn.textContent = `👥 Учні (${entries.length})`;
+    }
 
     const pop = $('live-students-popover');
     pop.innerHTML = '';
