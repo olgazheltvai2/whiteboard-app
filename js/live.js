@@ -512,17 +512,24 @@ export class LiveSessionManager {
     }
   }
 
-  sendCursor(worldPt) {
+ sendCursor(worldPt) {
     if (!this.isActive()) return;
     const now = Date.now();
     if (now - this.lastCursorSentAt < 85) return;
     this.lastCursorSentAt = now;
 
     const payload = { x: Math.round(worldPt.x), y: Math.round(worldPt.y), ts: now };
-    const path = this.role === 'teacher'
-      ? `rooms/${this.roomId}/teacherCursor`
-      : `rooms/${this.roomId}/students/${this.clientId}/cursor`;
-    this.fb.set(this.fb.ref(this.db, path), payload).catch(() => {});
+    if (this.role === 'teacher') {
+      this.fb.set(this.fb.ref(this.db, `rooms/${this.roomId}/teacherCursor`), payload).catch(() => {});
+    } else {
+      const stuRef = this.fb.ref(this.db, `rooms/${this.roomId}/students/${this.clientId}`);
+      this.fb.update(stuRef, {
+        name: this.studentName,
+        color: this.studentColor,
+        online: true,
+        cursor: payload
+      }).catch(() => {});
+    }
   }
 
   _renderRemoteCursors(studentsMap, teacherCursor) {
