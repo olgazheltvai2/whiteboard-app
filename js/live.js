@@ -1,6 +1,6 @@
-// Firebase Realtime Database live collaboration module (Teacher & Mini-Group Student Mode)
+// Firebase Realtime Database live collaboration module (Teacher & Mini-Group Student Mode + 24h Auto-Expire)
 
-import { STUDENT_COLORS, extractDatabaseUrl, uid } from './config.js';
+import { LIVE_SESSION_TTL_MS, STORAGE_KEYS, STUDENT_COLORS, extractDatabaseUrl, uid } from './config.js';
 
 const FB_VER = '10.12.2';
 
@@ -10,6 +10,35 @@ function assetKeyFromPath(assetPath) {
 
 function stripUndefined(obj) {
   return JSON.parse(JSON.stringify(obj));
+}
+
+function loadTrackedRooms() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.ACTIVE_LIVE_ROOMS);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveTrackedRooms(list) {
+  try {
+    localStorage.setItem(STORAGE_KEYS.ACTIVE_LIVE_ROOMS, JSON.stringify(list));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function registerTrackedRoom(roomId, databaseURL, expiresAt) {
+  const list = loadTrackedRooms().filter((r) => r && r.roomId !== roomId);
+  list.push({ roomId, databaseURL, expiresAt });
+  saveTrackedRooms(list);
+}
+
+function unregisterTrackedRoom(roomId) {
+  const list = loadTrackedRooms().filter((r) => r && r.roomId !== roomId);
+  saveTrackedRooms(list);
 }
 
 export class LiveSessionManager {
@@ -22,6 +51,7 @@ export class LiveSessionManager {
     onRemoteCamera,
     onStudentsChange,
     onSessionEnded,
+    onAutoExpired,
     onToast
   }) {
     this.cursorsLayerEl = cursorsLayerEl;
@@ -32,6 +62,7 @@ export class LiveSessionManager {
     this.onRemoteCamera = onRemoteCamera;
     this.onStudentsChange = onStudentsChange;
     this.onSessionEnded = onSessionEnded;
+    this.onAutoExpired = onAutoExpired || (() => {});
     this.onToast = onToast;
 
     this.fb = null;
@@ -39,6 +70,7 @@ export class LiveSessionManager {
     this.databaseURL = '';
     this.role = null; // 'teacher' | 'student' | null
     this.roomId = null;
+    this.expiresAt = 0;
     this.clientId = uid('usr');
     this.studentName = '';
     this.studentColor = STUDENT_COLORS[Math.floor(Math.random() * STUDENT_COLORS.length)];
@@ -53,6 +85,14 @@ export class LiveSessionManager {
     this.lastCursorSentAt = 0;
     this.lastCameraSentAt = 0;
     this.teacherClaimedUntil = new Map();
+    this._expiryTimer = null;
+
+    // Also check expiry immediately when laptop wakes up or tab becomes visible
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        this._checkActiveExpiry();
+      }
+    });
   }
 
   isActive() {
@@ -116,14 +156,78 @@ export class LiveSessionManager {
     }
   }
 
+  // Silently deletes any forgotten rooms older than 24 hours (costs ~0 bytes, works with rooms/$roomId rules!)
+  async cleanupExpiredRooms(defaultDatabaseURL = '') {
+    const now = Date.now();
+    const tracked = loadTrackedRooms();
+    const expired = tracked.filter((r) => r && r.roomId && r.expiresAt && now >= r.expiresAt);
+    if (!expired.length) return 0;
+
+    let cleaned = 0;
+    const remaining = tracked.filter((r) => !expired.includes(r));
+
+    for (const item of expired) {
+      const url = item.databaseURL || defaultDatabaseURL;
+      if (!url) continue;
+      try {
+        const db = await this._loadFirebase(url);
+        await this.fb.remove(this.fb.ref(db, `rooms/${item.roomId}`));
+        cleaned += 1;
+      } catch {
+        // Keep only if it's less than 7 days old and likely a temporary offline error
+        if (now - item.expiresAt < 7 * 24 * 60 * 60 * 1000) {
+          remaining.push(item);
+        }
+      }
+    }
+
+    saveTrackedRooms(remaining);
+    return cleaned;
+  }
+
+  _startExpiryWatcher() {
+    this._stopExpiryWatcher();
+    this._expiryTimer = setInterval(() => this._checkActiveExpiry(), 60 * 1000);
+  }
+
+  _stopExpiryWatcher() {
+    if (this._expiryTimer) {
+      clearInterval(this._expiryTimer);
+      this._expiryTimer = null;
+    }
+  }
+
+  async _checkActiveExpiry() {
+    if (!this.isActive() || !this.expiresAt) return;
+    if (Date.now() < this.expiresAt) return;
+
+    if (this.role === 'teacher') {
+      await this.stopHosting();
+      this.onAutoExpired();
+    } else if (this.role === 'student') {
+      const expiredRoomId = this.roomId;
+      const db = this.db;
+      this._cleanupListeners();
+      this.role = null;
+      this.roomId = null;
+      this.expiresAt = 0;
+      this.onSessionEnded();
+      if (db && expiredRoomId) {
+        this.fb.remove(this.fb.ref(db, `rooms/${expiredRoomId}`)).catch(() => {});
+      }
+    }
+  }
+
   // --- TEACHER: Host a single board live ---
 
   async startHosting({ databaseURL, board, storage, cameraState }) {
     const db = await this._loadFirebase(databaseURL);
     this._cleanupListeners();
 
+    const now = Date.now();
     this.role = 'teacher';
     this.roomId = uid('rm');
+    this.expiresAt = now + LIVE_SESSION_TTL_MS;
     this.globalPerm = 'edit';
     this.followCamera = false;
     this.cameraSeq = 1;
@@ -133,8 +237,8 @@ export class LiveSessionManager {
     const assetsMap = {};
     for (const o of board.objects || []) {
       const cleanObj = stripUndefined(o);
-      delete cleanObj.inlineDataUrl; // Stored once in assetsMap
-      objectsMap[o.id] = { ...cleanObj, _by: 'teacher', _ts: Date.now() };
+      delete cleanObj.inlineDataUrl;
+      objectsMap[o.id] = { ...cleanObj, _by: 'teacher', _ts: now };
       if (o.type === 'image' && o.assetPath) {
         const dataUrl = await storage.getAssetDataUrl(o.assetPath, o.inlineDataUrl);
         if (dataUrl) {
@@ -145,7 +249,7 @@ export class LiveSessionManager {
 
     const strokesMap = {};
     for (const s of board.strokes || []) {
-      strokesMap[s.id] = { ...stripUndefined(s), _by: 'teacher', _ts: Date.now() };
+      strokesMap[s.id] = { ...stripUndefined(s), _by: 'teacher', _ts: now };
     }
 
     const roomData = {
@@ -156,7 +260,8 @@ export class LiveSessionManager {
         globalPerm: this.globalPerm,
         followCamera: false,
         active: true,
-        startedAt: Date.now()
+        startedAt: now,
+        expiresAt: this.expiresAt
       },
       camera: {
         cx: Math.round(cameraState.cx),
@@ -175,8 +280,10 @@ export class LiveSessionManager {
     const roomRef = this.fb.ref(db, `rooms/${this.roomId}`);
     await this.fb.set(roomRef, roomData);
 
-    // Subscribe to student edits, presence & cursors
+    // Record locally so even if the browser closes without clicking Stop, it will be swept after 24h
+    registerTrackedRoom(this.roomId, this.databaseURL, this.expiresAt);
     this._subscribeTeacherListeners();
+    this._startExpiryWatcher();
     return this.getInviteUrl();
   }
 
@@ -200,7 +307,6 @@ export class LiveSessionManager {
       const now = Date.now();
       for (const [id, item] of Object.entries(map)) {
         if (!item) continue;
-        // Teacher priority: ignore stale student updates while teacher recently touched this item
         if (item._by !== 'teacher' && (this.teacherClaimedUntil.get(id) || 0) > now) {
           continue;
         }
@@ -240,11 +346,14 @@ export class LiveSessionManager {
     if (!this.isActive() || this.role !== 'teacher') return;
     const roomId = this.roomId;
     this._cleanupListeners();
+    this._stopExpiryWatcher();
     this.role = null;
     this.roomId = null;
+    this.expiresAt = 0;
     this.students = {};
     this.onStudentsChange({});
     this._clearCursors();
+    unregisterTrackedRoom(roomId);
 
     try {
       await this.fb.set(this.fb.ref(this.db, `rooms/${roomId}/meta/active`), false);
@@ -328,12 +437,19 @@ export class LiveSessionManager {
       throw new Error('Цей урок уже завершено або посилання недійсне.');
     }
 
+    const exp = meta.expiresAt || (meta.startedAt ? meta.startedAt + LIVE_SESSION_TTL_MS : 0);
+    if (exp && Date.now() >= exp) {
+      // Auto-purge expired forgotten room from Firebase
+      this.fb.remove(this.fb.ref(db, `rooms/${roomId}`)).catch(() => {});
+      throw new Error('Цей урок автоматично завершено (минуло 24 години).');
+    }
+
     this.role = 'student';
     this.roomId = roomId;
+    this.expiresAt = exp;
     this.studentName = (studentName || 'Учень').trim().slice(0, 24);
     this.lastAppliedCameraSeq = 0;
 
-    // Register presence with automatic cleanup on disconnect
     const myRef = this.fb.ref(db, `rooms/${roomId}/students/${this.clientId}`);
     await this.fb.set(myRef, {
       name: this.studentName,
@@ -348,13 +464,21 @@ export class LiveSessionManager {
 
     const unsubMeta = this.fb.onValue(this.fb.ref(db, `${base}/meta`), (snap) => {
       const m = snap.val();
-      if (!m || m.active === false) {
+      const mExp = m && (m.expiresAt || (m.startedAt ? m.startedAt + LIVE_SESSION_TTL_MS : 0));
+      if (!m || m.active === false || (mExp && Date.now() >= mExp)) {
+        const rid = this.roomId;
         this._cleanupListeners();
+        this._stopExpiryWatcher();
         this.role = null;
         this.roomId = null;
+        this.expiresAt = 0;
         this.onSessionEnded();
+        if (mExp && Date.now() >= mExp && rid) {
+          this.fb.remove(this.fb.ref(db, `rooms/${rid}`)).catch(() => {});
+        }
         return;
       }
+      this.expiresAt = mExp;
       this.globalPerm = m.globalPerm || 'edit';
       this.followCamera = Boolean(m.followCamera);
       const eff = this.getEffectiveStudentPerm();
@@ -408,6 +532,7 @@ export class LiveSessionManager {
     });
 
     this.unsubscribers.push(unsubMeta, unsubObj, unsubStr, unsubCam, unsubStu, unsubTCur, unsubLiveStr);
+    this._startExpiryWatcher();
     return meta;
   }
 
@@ -451,7 +576,6 @@ export class LiveSessionManager {
     const updates = {};
 
     if (fullSync) {
-      // Replace entire maps (used by Teacher on Undo/Redo)
       const cleanObjs = {};
       for (const [id, o] of Object.entries(objectsMap)) {
         const c = stripUndefined(o);
@@ -512,7 +636,7 @@ export class LiveSessionManager {
     }
   }
 
- sendCursor(worldPt) {
+  sendCursor(worldPt) {
     if (!this.isActive()) return;
     const now = Date.now();
     if (now - this.lastCursorSentAt < 85) return;
@@ -578,6 +702,7 @@ export class LiveSessionManager {
   }
 
   _cleanupListeners() {
+    this._stopExpiryWatcher();
     this.unsubscribers.forEach((fn) => {
       try { fn(); } catch {}
     });

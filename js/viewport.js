@@ -10,7 +10,7 @@ export class ViewportController {
     this.x = 0;
     this.y = 0;
     this.zoom = 1;
-    this.minZoom = 0.12;
+    this.minZoom = 0.02;
     this.maxZoom = 4.5;
     this.cameraLocked = false;
 
@@ -244,6 +244,42 @@ export class ViewportController {
       x: (rect.width / 2 - this.x) / this.zoom,
       y: (rect.height / 2 - this.y) / this.zoom
     };
+  }
+
+  getVisibleWorldRect(marginRatio = 0.5) {
+    const rect = this.viewportEl.getBoundingClientRect();
+    const w = Math.max(100, rect.width);
+    const h = Math.max(100, rect.height);
+    const minX = -this.x / this.zoom;
+    const minY = -this.y / this.zoom;
+    const viewW = w / this.zoom;
+    const viewH = h / this.zoom;
+    const padX = viewW * marginRatio;
+    const padY = viewH * marginRatio;
+    return {
+      minX: minX - padX,
+      minY: minY - padY,
+      maxX: minX + viewW + padX,
+      maxY: minY + viewH + padY,
+      cx: minX + viewW / 2,
+      cy: minY + viewH / 2,
+      viewW,
+      viewH
+    };
+  }
+
+  focusOnRect(x, y, w, h, { maxZoom = 1.05, minTargetZoom = 0.25, fillRatio = 0.52 } = {}) {
+    if (this.cameraLocked) return;
+    const rect = this.viewportEl.getBoundingClientRect();
+    const sw = Math.max(200, rect.width);
+    const sh = Math.max(200, rect.height);
+    const bw = Math.max(60, w);
+    const bh = Math.max(60, h);
+    const targetZ = Math.min((sw * fillRatio) / bw, (sh * fillRatio) / bh, maxZoom);
+    const clamped = Math.min(this.maxZoom, Math.max(minTargetZoom, targetZ));
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    this.setView(sw / 2 - cx * clamped, sh / 2 - cy * clamped, clamped, true);
   }
 
   apply(notify = true) {

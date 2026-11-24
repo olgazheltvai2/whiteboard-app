@@ -1,4 +1,4 @@
-// Boards list sidebar, folders/tags, search, create, rename, duplicate, delete
+// Boards list sidebar, folders/tags, search, create, rename, duplicate, delete + multi-tab safe index merge
 
 import { uid } from './config.js';
 
@@ -41,6 +41,24 @@ export class BoardsManager {
     return this.index.boards;
   }
 
+  // Safely pulls fresh remote index before writing so two open browser tabs never overwrite each other
+  async _mutateIndexSafely(mutatorFn) {
+    if (this.storage.isCloudReady()) {
+      try {
+        const fresh = await this.storage.loadIndex();
+        if (fresh && Array.isArray(fresh.boards)) {
+          this.index = fresh;
+        }
+      } catch {
+        // Fallback to local in-memory index if temporary network hiccup
+      }
+    }
+    if (!Array.isArray(this.index.boards)) this.index.boards = [];
+    mutatorFn(this.index);
+    this.render();
+    await this.storage.saveIndex(this.index);
+  }
+
   getBoardMeta(id) {
     return this.index.boards.find((b) => b.id === id) || null;
   }
@@ -64,34 +82,36 @@ export class BoardsManager {
       bgTheme: 'dark',
       bgPattern: 'dots',
       viewport: null,
+      anchorObjectId: null,
       objects: [],
       strokes: []
     };
 
-    this.index.boards.unshift(meta);
     await this.storage.saveBoard(fullData);
-    await this.storage.saveIndex(this.index);
-    this.render();
+    await this._mutateIndexSafely((idx) => {
+      idx.boards = idx.boards.filter((b) => b.id !== id);
+      idx.boards.unshift(meta);
+    });
     return fullData;
   }
 
   async updateBoardMeta(id, { title, folder }) {
-    const meta = this.getBoardMeta(id);
-    if (!meta) return;
-    if (typeof title === 'string') meta.title = title.trim() || 'Без назви';
-    if (typeof folder === 'string') meta.folder = folder.trim();
-    meta.updatedAt = new Date().toISOString();
-    this.render();
-    await this.storage.saveIndex(this.index);
+    await this._mutateIndexSafely((idx) => {
+      const meta = idx.boards.find((b) => b.id === id);
+      if (!meta) return;
+      if (typeof title === 'string') meta.title = title.trim() || 'Без назви';
+      if (typeof folder === 'string') meta.folder = folder.trim();
+      meta.updatedAt = new Date().toISOString();
+    });
   }
 
   async touchBoard(id) {
-    const meta = this.getBoardMeta(id);
-    if (!meta) return;
-    meta.updatedAt = new Date().toISOString();
-    this.index.boards.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
-    this.render();
-    await this.storage.saveIndex(this.index);
+    await this._mutateIndexSafely((idx) => {
+      const meta = idx.boards.find((b) => b.id === id);
+      if (!meta) return;
+      meta.updatedAt = new Date().toISOString();
+      idx.boards.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+    });
   }
 
   async duplicateBoard(id, openAfter = true) {
@@ -115,10 +135,10 @@ export class BoardsManager {
       ...newMeta
     };
 
-    this.index.boards.unshift(newMeta);
     await this.storage.saveBoard(newData);
-    await this.storage.saveIndex(this.index);
-    this.render();
+    await this._mutateIndexSafely((idx) => {
+      idx.boards.unshift(newMeta);
+    });
     this.onToast('Копію дошки створено');
     if (openAfter) {
       await this.onSelectBoard(newId);
@@ -130,10 +150,10 @@ export class BoardsManager {
     if (!meta) return;
     if (!confirm(`Видалити дошку «${meta.title}»?`)) return;
 
-    this.index.boards = this.index.boards.filter((b) => b.id !== id);
     await this.storage.deleteBoard(id);
-    await this.storage.saveIndex(this.index);
-    this.render();
+    await this._mutateIndexSafely((idx) => {
+      idx.boards = idx.boards.filter((b) => b.id !== id);
+    });
     this.onToast('Дошку видалено');
 
     if (this.activeBoardId === id) {
@@ -157,7 +177,6 @@ export class BoardsManager {
   render() {
     const folders = this.getUniqueFolders();
 
-    // Update datalist for modal autocomplete
     this.datalistEl.innerHTML = '';
     folders.forEach((f) => {
       const opt = document.createElement('option');
@@ -165,7 +184,6 @@ export class BoardsManager {
       this.datalistEl.appendChild(opt);
     });
 
-    // Render folder filter pills
     this.filtersEl.innerHTML = '';
     if (folders.length > 0) {
       const makePill = (label, val) => {
@@ -182,7 +200,6 @@ export class BoardsManager {
       folders.forEach((f) => makePill(f, f));
     }
 
-    // Filter boards
     const filtered = this.index.boards.filter((b) => {
       if (this.activeFolder !== 'ALL' && b.folder !== this.activeFolder) return false;
       if (this.searchQuery) {

@@ -1,9 +1,41 @@
-// Unified Selection, Marquee, Multi-Drag/Resize, Z-Layering (Objects + Drawings), Font Picker & Grouping
+// Unified Selection, Marquee, Multi-Drag/Resize, Z-Layering, Font Picker, Grouping & Cross-Tab/Cross-Account Clipboard
 
-import { CLIPBOARD_MARKER_PREFIX, DRAW_COLORS, FONT_PRESETS, NOTE_COLORS, uid } from './config.js';
+import { CLIPBOARD_MARKER_PREFIX, DRAW_COLORS, FONT_PRESETS, NOTE_COLORS, STORAGE_KEYS, uid } from './config.js';
 
 function boxesIntersect(a, b) {
   return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
+}
+
+function escapeHtmlAttr(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function encodeObjPayload(obj) {
+  const json = JSON.stringify(obj);
+  const bytes = new TextEncoder().encode(json);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+export function decodeObjPayload(b64) {
+  try {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return null;
+  }
+}
+
+function extractFirstUrl(text) {
+  const m = String(text || '').match(/https?:\/\/[^\s"'<>]+/i);
+  return m ? m[0].replace(/[),.;]+$/, '') : null;
 }
 
 export class SelectionManager {
@@ -16,6 +48,7 @@ export class SelectionManager {
     viewport,
     objects,
     drawing,
+    storage,
     onMutate,
     onLiveTransform,
     onToast,
@@ -23,7 +56,10 @@ export class SelectionManager {
     canEditObjects = () => true,
     canWriteText = () => true,
     getNextZIndex,
-    getMinZIndex
+    getMinZIndex,
+    getCurrentBoardId = () => null,
+    getAnchorObjectId = () => null,
+    onToggleAnchor = () => {}
   }) {
     this.viewportEl = viewportEl;
     this.selectionBoxEl = selectionBoxEl;
@@ -33,6 +69,7 @@ export class SelectionManager {
     this.viewport = viewport;
     this.objects = objects;
     this.drawing = drawing;
+    this.storage = storage;
     this.onMutate = onMutate;
     this.onLiveTransform = onLiveTransform || (() => {});
     this.onToast = onToast;
@@ -41,6 +78,9 @@ export class SelectionManager {
     this.canWriteText = canWriteText;
     this.getNextZIndex = getNextZIndex;
     this.getMinZIndex = getMinZIndex;
+    this.getCurrentBoardId = getCurrentBoardId;
+    this.getAnchorObjectId = getAnchorObjectId;
+    this.onToggleAnchor = onToggleAnchor;
 
     this.selectedIds = new Set();
     this.interaction = null;
@@ -62,7 +102,6 @@ export class SelectionManager {
       this.render();
       return;
     }
-    // Restore original positions if a 2-finger pinch interrupted a 1-frame accidental drag
     if (it.snapshots && it.moved) {
       for (const entry of it.snapshots) {
         Object.assign(entry.item, entry.snap);
@@ -212,7 +251,6 @@ export class SelectionManager {
     this.render();
   }
 
-  // Respect actual visual zIndex between objects & strokes!
   hitTestWorld(wx, wy) {
     const hitStroke = this.drawing.hitTest(wx, wy);
     const hitObj = this.objects.hitTest(wx, wy);
@@ -221,7 +259,6 @@ export class SelectionManager {
     if (hitStroke) candidates.push({ kind: 'stroke', data: hitStroke });
     if (hitObj) candidates.push({ kind: 'object', data: hitObj });
 
-    // Students cannot select locked items at all
     const allowed = this.isTeacher()
       ? candidates
       : candidates.filter((c) => !c.data.locked);
@@ -229,7 +266,6 @@ export class SelectionManager {
     if (!allowed.length) return null;
     if (allowed.length === 1) return allowed[0];
 
-    // Prefer unlocked over locked; if both unlocked (or both locked), pick higher zIndex!
     allowed.sort((a, b) => {
       const lockDiff = (a.data.locked ? 1 : 0) - (b.data.locked ? 1 : 0);
       if (lockDiff !== 0) return lockDiff;
@@ -245,7 +281,6 @@ export class SelectionManager {
 
     if (!hit) {
       if (!e.shiftKey) this.clear();
-      // On touch screens (tablets/phones), dragging empty space smoothly pans the board!
       if (e.pointerType === 'touch') {
         this.viewport.startPan(e.clientX, e.clientY, e.pointerId, false);
         return;
@@ -361,7 +396,6 @@ export class SelectionManager {
     this.selectionBoxEl.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       if (this.viewport.spacePressed || this.viewport.isPinching || !this.canEditObjects()) return;
-      // Let touch pointerdown bubble to app touch-tracker for 2-finger pinch detection
       if (e.pointerType !== 'touch') e.stopPropagation();
       else e._handledBySelectionBox = true;
 
@@ -616,12 +650,10 @@ export class SelectionManager {
     return false;
   }
 
-  // Works for BOTH objects AND drawings (pen, highlighter, shapes)!
   bringToFrontSelected() {
     if (!this.canEditObjects()) return;
     const unlocked = this.getSelectedItems().filter((i) => !i.data.locked);
     if (!unlocked.length) return;
-    // Preserve relative order among selected items
     unlocked.sort((a, b) => (a.data.zIndex ?? 0) - (b.data.zIndex ?? 0));
     let z = this.getNextZIndex();
     for (const it of unlocked) {
@@ -646,10 +678,49 @@ export class SelectionManager {
     this.onMutate('z-back', this._collectMutationMeta(unlocked));
   }
 
-  // --- Clipboard ---
+  // --- Cross-Tab & Cross-Account Clipboard ---
 
   hasClipboard() {
     return Boolean(this.clipboard && (this.clipboard.objects.length || this.clipboard.strokes.length));
+  }
+
+  async _writeImageToSystemClipboard(obj) {
+    if (!navigator.clipboard || typeof navigator.clipboard.write !== 'function' || typeof ClipboardItem === 'undefined') {
+      return false;
+    }
+
+    const repoKey = this.storage ? this.storage.getRepoKey() : 'local';
+    const metaPayload = encodeObjPayload({
+      repoKey,
+      sourceBoardId: this.getCurrentBoardId(),
+      assetPath: obj.assetPath || '',
+      w: obj.w,
+      h: obj.h,
+      rotation: obj.rotation || 0,
+      aspectRatio: obj.aspectRatio || (obj.w / Math.max(1, obj.h))
+    });
+    const htmlStr = `<img data-wb-img="${escapeHtmlAttr(metaPayload)}" alt="whiteboard-image" />`;
+
+    const pngBlobPromise = this.storage.getAssetPngBlob(obj.assetPath, obj.inlineDataUrl);
+
+    try {
+      // Promise-based ClipboardItem keeps the user gesture active in Chrome/Edge!
+      const itemWithMeta = new ClipboardItem({
+        'image/png': pngBlobPromise,
+        'text/html': new Blob([htmlStr], { type: 'text/html' })
+      });
+      await navigator.clipboard.write([itemWithMeta]);
+      return true;
+    } catch {
+      try {
+        const pngBlob = await pngBlobPromise;
+        if (!pngBlob) return false;
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })]);
+        return true;
+      } catch {
+        return false;
+      }
+    }
   }
 
   copySelected(clipboardEvent = null) {
@@ -657,18 +728,95 @@ export class SelectionManager {
     const items = this.getSelectedItems().filter((i) => this.isTeacher() || !i.data.locked);
     if (!items.length) return false;
 
-    this.clipboard = {
-      objects: items.filter((i) => i.kind === 'object').map((i) => JSON.parse(JSON.stringify(i.data))),
-      strokes: items.filter((i) => i.kind === 'stroke').map((i) => JSON.parse(JSON.stringify(i.data)))
-    };
+    const objs = items.filter((i) => i.kind === 'object').map((i) => JSON.parse(JSON.stringify(i.data)));
+    const strs = items.filter((i) => i.kind === 'stroke').map((i) => JSON.parse(JSON.stringify(i.data)));
+
+    this.clipboard = { objects: objs, strokes: strs };
     this.pasteCount = 0;
-    this.clipboardStamp = `${CLIPBOARD_MARKER_PREFIX}${Date.now()}`;
+    const stamp = `${CLIPBOARD_MARKER_PREFIX}${Date.now()}`;
+    this.clipboardStamp = stamp;
+
+    const repoKey = this.storage ? this.storage.getRepoKey() : 'local';
+    const sourceBoardId = this.getCurrentBoardId();
+
+    // Save shared clipboard for multi-tab paste within the same browser profile
+    try {
+      localStorage.setItem(STORAGE_KEYS.SHARED_CLIPBOARD, JSON.stringify({
+        stamp,
+        repoKey,
+        sourceBoardId,
+        ts: Date.now(),
+        payload: this.clipboard
+      }));
+    } catch {
+      // Ignore quota errors
+    }
+
+    // CASE 1: Single Image -> write real PNG Blob to OS clipboard (works across monitors, browsers & accounts!)
+    if (objs.length === 1 && strs.length === 0 && objs[0].type === 'image') {
+      const imgObj = objs[0];
+      if (clipboardEvent) clipboardEvent.preventDefault();
+      this._writeImageToSystemClipboard(imgObj).then((ok) => {
+        if (ok) {
+          this.onToast('🖼️ Фото скопійовано (можна вставити на будь-яку дошку)');
+        } else {
+          this.onToast('Скопійовано у буфер дошки');
+        }
+      });
+      return true;
+    }
+
+    // CASE 2: Single Text or Note -> write CLEAN plain text + styled HTML metadata (works everywhere!)
+    if (objs.length === 1 && strs.length === 0 && (objs[0].type === 'text' || objs[0].type === 'note')) {
+      const textObj = objs[0];
+      const cleanText = textObj.text || '';
+      const meta = encodeObjPayload({
+        sourceBoardId,
+        obj: textObj
+      });
+      const htmlStr = `<span data-wb-obj="${escapeHtmlAttr(meta)}">${escapeHtmlAttr(cleanText)}</span>`;
+
+      if (clipboardEvent && clipboardEvent.clipboardData) {
+        clipboardEvent.clipboardData.setData('text/plain', cleanText);
+        clipboardEvent.clipboardData.setData('text/html', htmlStr);
+        clipboardEvent.preventDefault();
+      } else if (navigator.clipboard && typeof navigator.clipboard.write === 'function' && typeof ClipboardItem !== 'undefined') {
+        const item = new ClipboardItem({
+          'text/plain': new Blob([cleanText], { type: 'text/plain' }),
+          'text/html': new Blob([htmlStr], { type: 'text/html' })
+        });
+        navigator.clipboard.write([item]).catch(() => {
+          navigator.clipboard.writeText?.(cleanText).catch(() => {});
+        });
+      } else if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(cleanText).catch(() => {});
+      }
+
+      this.onToast('📋 Текст скопійовано');
+      return true;
+    }
+
+    // CASE 3: Multi-item or strokes
+    const textFallback = objs
+      .filter((o) => (o.type === 'text' || o.type === 'note') && o.text)
+      .map((o) => o.text)
+      .join('\n\n') || stamp;
+    const htmlMulti = `<span data-wb-multi="${escapeHtmlAttr(stamp)}">${escapeHtmlAttr(textFallback)}</span>`;
 
     if (clipboardEvent && clipboardEvent.clipboardData) {
-      clipboardEvent.clipboardData.setData('text/plain', this.clipboardStamp);
+      clipboardEvent.clipboardData.setData('text/plain', textFallback);
+      clipboardEvent.clipboardData.setData('text/html', htmlMulti);
       clipboardEvent.preventDefault();
+    } else if (navigator.clipboard && typeof navigator.clipboard.write === 'function' && typeof ClipboardItem !== 'undefined') {
+      const item = new ClipboardItem({
+        'text/plain': new Blob([textFallback], { type: 'text/plain' }),
+        'text/html': new Blob([htmlMulti], { type: 'text/html' })
+      });
+      navigator.clipboard.write([item]).catch(() => {
+        navigator.clipboard.writeText?.(stamp).catch(() => {});
+      });
     } else if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(this.clipboardStamp).catch(() => {});
+      navigator.clipboard.writeText(stamp).catch(() => {});
     }
 
     this.onToast(`Скопійовано (${items.length})`);
@@ -681,13 +829,36 @@ export class SelectionManager {
     return true;
   }
 
-  pasteInternal(customPayload = null) {
+  pasteInternal(customPayload = null, { centerInViewport = false } = {}) {
     if (!this.canEditObjects()) return false;
     const payload = customPayload || this.clipboard;
     if (!payload || (!payload.objects.length && !payload.strokes.length)) return false;
 
     if (!customPayload) this.pasteCount += 1;
-    const offset = customPayload ? 26 : 26 * this.pasteCount;
+    let dx = customPayload ? 26 : 26 * this.pasteCount;
+    let dy = dx;
+
+    if (centerInViewport) {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const o of payload.objects || []) {
+        minX = Math.min(minX, o.x);
+        minY = Math.min(minY, o.y);
+        maxX = Math.max(maxX, o.x + o.w);
+        maxY = Math.max(maxY, o.y + o.h);
+      }
+      for (const s of payload.strokes || []) {
+        const b = this.drawing.getStrokeBounds(s);
+        minX = Math.min(minX, b.minX);
+        minY = Math.min(minY, b.minY);
+        maxX = Math.max(maxX, b.maxX);
+        maxY = Math.max(maxY, b.maxY);
+      }
+      if (isFinite(minX) && isFinite(minY)) {
+        const center = this.viewport.getCenterWorld();
+        dx = Math.round(center.x - (minX + maxX) / 2);
+        dy = Math.round(center.y - (minY + maxY) / 2);
+      }
+    }
 
     const groupRemap = new Map();
     const remapGroup = (gid) => {
@@ -701,11 +872,11 @@ export class SelectionManager {
     const newStrokes = [];
     let nextZ = this.getNextZIndex();
 
-    for (const src of payload.objects) {
+    for (const src of payload.objects || []) {
       const copy = JSON.parse(JSON.stringify(src));
       copy.id = uid(copy.type);
-      copy.x += offset;
-      copy.y += offset;
+      copy.x = Math.round(copy.x + dx);
+      copy.y = Math.round(copy.y + dy);
       copy.locked = false;
       copy.zIndex = nextZ++;
       if (copy.groupId) copy.groupId = remapGroup(copy.groupId);
@@ -713,13 +884,13 @@ export class SelectionManager {
       newIds.push(copy.id);
     }
 
-    for (const src of payload.strokes) {
+    for (const src of payload.strokes || []) {
       const copy = JSON.parse(JSON.stringify(src));
       copy.id = uid(copy.points ? 'str' : 'shp');
       copy.locked = false;
       copy.zIndex = nextZ++;
       if (copy.groupId) copy.groupId = remapGroup(copy.groupId);
-      this.drawing.translateStrokeInPlace(copy, offset, offset);
+      this.drawing.translateStrokeInPlace(copy, dx, dy);
       newStrokes.push(copy);
       newIds.push(copy.id);
     }
@@ -743,7 +914,7 @@ export class SelectionManager {
       objects: items.filter((i) => i.kind === 'object').map((i) => JSON.parse(JSON.stringify(i.data))),
       strokes: items.filter((i) => i.kind === 'stroke').map((i) => JSON.parse(JSON.stringify(i.data)))
     };
-    this.pasteInternal(payload);
+    this.pasteInternal(payload, { centerInViewport: false });
   }
 
   // --- Rendering Overlay & Context Toolbar ---
@@ -823,7 +994,6 @@ export class SelectionManager {
     this.toolbarEl.classList.remove('hidden');
     this.toolbarEl.innerHTML = '';
 
-    // Font selector (note: changing <select> needs focus, so keep editing alive cleanly via flag)
     const sel = document.createElement('select');
     sel.className = 'ctx-select';
     sel.title = 'Шрифт';
@@ -850,7 +1020,6 @@ export class SelectionManager {
       btn.className = `ctx-btn ${cls}`;
       btn.textContent = label;
       btn.title = title;
-      // preventDefault on pointerdown keeps focus inside textarea so it doesn't blur!
       btn.addEventListener('pointerdown', (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -956,10 +1125,38 @@ export class SelectionManager {
     const unlocked = items.filter((i) => !i.data.locked);
     const singleObj = items.length === 1 && items[0].kind === 'object' ? items[0].data : null;
 
-    if (singleObj && !singleObj.locked && (singleObj.type === 'text' || singleObj.type === 'note')) {
-      addBtn('✏️ Писати', 'Редагувати текст (або подвійний клік / Enter)', () => {
-        this.objects.startEditing(singleObj.id);
+    if (singleObj && (singleObj.type === 'text' || singleObj.type === 'note')) {
+      if (!singleObj.locked) {
+        addBtn('✏️ Писати', 'Редагувати текст (або подвійний клік / Enter)', () => {
+          this.objects.startEditing(singleObj.id);
+        }, 'accent');
+      }
+      addBtn('📋 Текст', 'Скопіювати чистий текст/шлях у буфер (Ctrl+C)', () => {
+        this.copySelected();
+      });
+      const foundUrl = extractFirstUrl(singleObj.text);
+      if (foundUrl) {
+        addBtn('🔗 Відкрити', `Відкрити посилання: ${foundUrl}`, () => {
+          window.open(foundUrl, '_blank', 'noopener');
+        }, 'accent');
+      }
+    }
+
+    if (singleObj && singleObj.type === 'image') {
+      addBtn('📋 Фото', 'Скопіювати фото (вставиться навіть на іншому акаунті / браузері)', () => {
+        this.copySelected();
       }, 'accent');
+      if (this.isTeacher()) {
+        const isAnchor = this.getAnchorObjectId() === singleObj.id;
+        addBtn(
+          isAnchor ? '🎯 Головне фото' : '🎯 Якір',
+          isAnchor
+            ? 'Зняти прив’язку головного фото'
+            : 'Зробити це фото точкою повернення для кнопки 🎯',
+          () => this.onToggleAnchor(singleObj.id),
+          isAnchor ? 'anchor-active' : ''
+        );
+      }
     }
 
     if (this.canGroup(items)) {
@@ -979,14 +1176,12 @@ export class SelectionManager {
     }
 
     if (unlocked.length > 0) {
-      // Z-Order buttons now work for BOTH images/text AND pen/marker/shapes!
       addBtn('⬆️', 'На передній план (поверх усього)', () => this.bringToFrontSelected());
       addBtn('⬇️', 'На задній план (під усе)', () => this.sendToBackSelected());
 
       const unlockedObjs = unlocked.filter((i) => i.kind === 'object');
       const unlockedStrokes = unlocked.filter((i) => i.kind === 'stroke');
 
-      // Font family & size for text/note
       const textItems = unlockedObjs.filter((i) => i.data.type === 'text' || i.data.type === 'note');
       if (textItems.length > 0 && textItems.length === unlocked.length) {
         const sel = document.createElement('select');
@@ -1034,7 +1229,6 @@ export class SelectionManager {
         });
       }
 
-      // Note colors
       if (unlocked.every((i) => i.kind === 'object' && i.data.type === 'note')) {
         NOTE_COLORS.forEach((c) => {
           const sw = document.createElement('button');
@@ -1055,7 +1249,6 @@ export class SelectionManager {
         });
       }
 
-      // Text or Stroke colors
       if (
         unlocked.every((i) => i.kind === 'object' && i.data.type === 'text') ||
         unlockedStrokes.length === unlocked.length
@@ -1079,7 +1272,9 @@ export class SelectionManager {
         });
       }
 
-      addBtn('📋', 'Копіювати (Ctrl+C)', () => this.copySelected());
+      if (!(singleObj && (singleObj.type === 'image' || singleObj.type === 'text' || singleObj.type === 'note'))) {
+        addBtn('📋', 'Копіювати (Ctrl+C)', () => this.copySelected());
+      }
       addBtn('➕', 'Дублювати (Ctrl+D)', () => this.duplicateSelected());
       addBtn('🗑️', 'Видалити (Delete)', () => this.deleteSelected(), 'danger');
     }

@@ -698,23 +698,6 @@
   padding: 0;
 }
 
-/* Empty Hint */
-.empty-hint {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  background: rgba(27, 31, 39, 0.78);
-  border: 1px dashed var(--ui-border);
-  color: var(--ui-text-muted);
-  padding: 14px 22px;
-  border-radius: var(--radius-lg);
-  text-align: center;
-  pointer-events: none;
-  max-width: 460px;
-  line-height: 1.5;
-}
-
 /* Bottom Dock */
 .dock-wrap {
   position: absolute;
@@ -1375,4 +1358,38 @@ body.student-mode #sidebar {
 /* Disabled tool state for student permissions */
 .tool-btn.perm-hidden {
   display: none !important;
+}
+
+/* Anchor Photo Badge & Lazy Placeholder */
+.anchor-indicator {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  background: rgba(20, 22, 28, 0.78);
+  color: #7cc4ff;
+  font-size: 12px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+}
+
+body.student-mode .anchor-indicator {
+  display: none !important;
+}
+
+.ctx-btn.anchor-active {
+  background: rgba(91, 141, 239, 0.28);
+  color: #a8cbff;
+}
+
+.board-obj-loading.lazy-idle {
+  background: rgba(120, 135, 160, 0.14);
+  border: 1px solid rgba(140, 155, 180, 0.22);
+  font-size: 11px;
+  opacity: 0.75;
 }

@@ -6,8 +6,13 @@ export const STORAGE_KEYS = {
   LAST_BOARD: 'whiteboard_last_board_id',
   LOCAL_INDEX: 'whiteboard_local_index_v1',
   LOCAL_BOARD_PREFIX: 'whiteboard_local_board_',
-  DEFAULT_FONT: 'whiteboard_default_font_v1'
+  DEFAULT_FONT: 'whiteboard_default_font_v1',
+  SHARED_CLIPBOARD: 'whiteboard_shared_clipboard_v1',
+  ACTIVE_LIVE_ROOMS: 'whiteboard_active_live_rooms_v1',
+  LAST_ROOM_SWEEP: 'whiteboard_last_room_sweep_v1'
 };
+
+export const LIVE_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const CLIPBOARD_MARKER_PREFIX = '__WB_INTERNAL_CLIPBOARD__:';
 
