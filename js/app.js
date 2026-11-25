@@ -40,7 +40,7 @@ class WhiteboardApp {
     this.modalBoardEditId = null;
     this.modalMarkerEditId = null;
     this.modalMarkerColor = MARKER_COLORS[0];
-    this.teleportReturnView = null;
+    this.teleportHistory = [];
 
     // Detect if opened via student invite link (?room=...&db=...)
     const params = new URLSearchParams(window.location.search);
@@ -823,13 +823,29 @@ class WhiteboardApp {
     pop.appendChild(listEl);
   }
 
+  _updateTeleportBackUI() {
+    const btn = $('btn-teleport-back');
+    if (!btn) return;
+    const count = this.teleportHistory.length;
+    btn.disabled = count === 0;
+    btn.classList.toggle('is-ready', count > 0);
+    btn.textContent = count > 1 ? `⬅️ Повернутись (${count})` : '⬅️ Повернутись';
+    btn.title = count > 0
+      ? 'Повернутись точно на те місце, звідки ви перейшли по мітці'
+      : 'Спочатку перейдіть або перенесіть об’єкт до мітки';
+  }
+
   _saveTeleportReturnView() {
-    this.teleportReturnView = {
-      x: this.viewport.x,
-      y: this.viewport.y,
-      zoom: this.viewport.zoom
-    };
-    $('btn-teleport-back').classList.remove('hidden');
+    const cam = this.viewport.getCameraState();
+    this.teleportHistory.push({
+      cx: cam.cx,
+      cy: cam.cy,
+      zoom: cam.zoom
+    });
+    if (this.teleportHistory.length > 25) {
+      this.teleportHistory.shift();
+    }
+    this._updateTeleportBackUI();
   }
 
   jumpToMarker(markerId) {
@@ -901,21 +917,22 @@ class WhiteboardApp {
     this.objects.syncVisibleObjects();
     this.selection.render();
     this._onBoardMutated('move-to-marker', { changedObjectIds, changedStrokeIds });
-    this.toast(`🚩 Перенесено до мітки «${marker.label}» — розставте й натисніть ↩️`);
+    this.toast(`🚩 Перенесено до мітки «${marker.label}» — розставте й натисніть «⬅️ Повернутись» угорі`);
   }
 
   returnFromTeleport() {
-    if (!this.teleportReturnView) {
-      $('btn-teleport-back').classList.add('hidden');
+    if (!this.teleportHistory.length) {
+      this._updateTeleportBackUI();
       return;
     }
-    const v = this.teleportReturnView;
-    this.teleportReturnView = null;
-    $('btn-teleport-back').classList.add('hidden');
+    const v = this.teleportHistory.pop();
+    this._updateTeleportBackUI();
     this.selection.clear();
-    this.viewport.setView(v.x, v.y, v.zoom, true);
+    const rect = $('viewport').getBoundingClientRect();
+    const z = v.zoom || 1;
+    this.viewport.setView(rect.width / 2 - v.cx * z, rect.height / 2 - v.cy * z, z, true);
     this.objects.syncVisibleObjects();
-    this.toast('↩️ Повернуто на попереднє місце');
+    this.toast('⬅️ Повернуто на місце до переходу по мітці');
   }
 
   _openMarkerModal(markerId) {
@@ -1307,8 +1324,8 @@ class WhiteboardApp {
       this.history.maxSteps = isHugeBoard ? 10 : 60;
       this.history.reset(this._getSnapshot());
       this.isDirty = false;
-      this.teleportReturnView = null;
-      $('btn-teleport-back').classList.add('hidden');
+      this.teleportHistory = [];
+      this._updateTeleportBackUI();
       $('markers-popover').classList.add('hidden');
       this._renderMarkersUI();
 
