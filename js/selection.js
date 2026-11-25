@@ -1,6 +1,6 @@
 // Unified Selection, Marquee, Multi-Drag/Resize, Z-Layering, Font Picker, Grouping & Cross-Tab/Cross-Account Clipboard
 
-import { CLIPBOARD_MARKER_PREFIX, DRAW_COLORS, FONT_PRESETS, NOTE_COLORS, STORAGE_KEYS, uid } from './config.js';
+import { CLIPBOARD_MARKER_PREFIX, DRAW_COLORS, FONT_PRESETS, MARKER_COLORS, NOTE_COLORS, STORAGE_KEYS, uid } from './config.js';
 
 function boxesIntersect(a, b) {
   return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
@@ -59,7 +59,11 @@ export class SelectionManager {
     getMinZIndex,
     getCurrentBoardId = () => null,
     getAnchorObjectId = () => null,
-    onToggleAnchor = () => {}
+    onToggleAnchor = () => {},
+    onEditMarker = () => {},
+    onSendSelectedToMarker = () => {},
+    onOpenMarkersMenu = () => {},
+    onSelectionChange = () => {}
   }) {
     this.viewportEl = viewportEl;
     this.selectionBoxEl = selectionBoxEl;
@@ -81,8 +85,13 @@ export class SelectionManager {
     this.getCurrentBoardId = getCurrentBoardId;
     this.getAnchorObjectId = getAnchorObjectId;
     this.onToggleAnchor = onToggleAnchor;
+    this.onEditMarker = onEditMarker;
+    this.onSendSelectedToMarker = onSendSelectedToMarker;
+    this.onOpenMarkersMenu = onOpenMarkersMenu;
+    this.onSelectionChange = onSelectionChange;
 
     this.selectedIds = new Set();
+    this.markerPickerOpen = false;
     this.interaction = null;
     this.clipboard = null;
     this.clipboardStamp = null;
@@ -206,6 +215,7 @@ export class SelectionManager {
       const it = this.getItem(id);
       return it && (this.isTeacher() || !it.data.locked);
     });
+    this.markerPickerOpen = false;
     this.selectedIds = this.expandWithGroups(filtered);
     this.render();
   }
@@ -226,6 +236,7 @@ export class SelectionManager {
 
   clear() {
     if (this.objects.isEditing()) this.objects.stopEditing();
+    this.markerPickerOpen = false;
     this.selectedIds.clear();
     this.render();
   }
@@ -429,6 +440,13 @@ export class SelectionManager {
       const pt = this.viewport.screenToWorld(e.clientX, e.clientY);
       const hitObj = this.objects.hitTest(pt.x, pt.y);
       if (!hitObj || hitObj.locked) return;
+      if (hitObj.type === 'marker' && this.isTeacher()) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.selectOnly([hitObj.id]);
+        this.onEditMarker(hitObj.id);
+        return;
+      }
       const canOpen = (hitObj.type === 'text' && this.canWriteText()) || (hitObj.type === 'note' && this.canEditObjects());
       if (canOpen) {
         e.preventDefault();
@@ -935,6 +953,7 @@ export class SelectionManager {
   render() {
     this.renderOverlayOnly();
     this._renderContextBar();
+    this.onSelectionChange();
   }
 
   renderOverlayOnly() {
@@ -981,12 +1000,13 @@ export class SelectionManager {
     this.selectionBoxEl.style.height = `${Math.max(12, bounds.maxY - bounds.minY)}px`;
     this.selectionBoxEl.style.transform = singleObj && singleObj.rotation ? `rotate(${singleObj.rotation}deg)` : '';
 
+    const onlyMarkers = items.every((i) => i.kind === 'object' && i.data.type === 'marker');
     this.selectionBoxEl.querySelectorAll('.resize-handle').forEach((h) => {
-      h.classList.toggle('hidden', allLocked);
+      h.classList.toggle('hidden', allLocked || onlyMarkers);
     });
     const rotHandle = this.selectionBoxEl.querySelector('.rotate-handle');
     if (rotHandle) {
-      rotHandle.classList.toggle('hidden', !(singleObj && !singleObj.locked));
+      rotHandle.classList.toggle('hidden', !(singleObj && !singleObj.locked && singleObj.type !== 'marker'));
     }
   }
 
@@ -1124,6 +1144,60 @@ export class SelectionManager {
     const allLocked = items.every((i) => i.data.locked);
     const unlocked = items.filter((i) => !i.data.locked);
     const singleObj = items.length === 1 && items[0].kind === 'object' ? items[0].data : null;
+
+    // Dedicated clean context bar when a single Marker is selected
+    if (singleObj && singleObj.type === 'marker' && this.isTeacher()) {
+      const tag = document.createElement('span');
+      tag.className = 'ctx-count';
+      tag.textContent = `🚩 Мітка «${singleObj.label || '1'}»`;
+      this.toolbarEl.appendChild(tag);
+
+      if (!singleObj.locked) {
+        addBtn('✏️ Назва', 'Змінити номер або назву мітки (подвійний клік)', () => {
+          this.onEditMarker(singleObj.id);
+        }, 'accent');
+
+        MARKER_COLORS.forEach((col) => {
+          const sw = document.createElement('button');
+          sw.className = 'ctx-color';
+          sw.style.backgroundColor = col;
+          sw.title = 'Колір мітки';
+          sw.addEventListener('click', (e) => {
+            e.stopPropagation();
+            sw.blur();
+            this.objects.updateMarkerProps(singleObj.id, { color: col });
+            this.render();
+          });
+          this.toolbarEl.appendChild(sw);
+        });
+      }
+
+      addBtn(
+        allLocked ? '🔓 Розблокувати' : '🔒 Закріпити',
+        'Закріпити мітку на місці або зробити її рухомою',
+        () => this.toggleLockSelected(),
+        allLocked ? 'active' : ''
+      );
+
+      if (!singleObj.locked) {
+        addBtn('🗑️', 'Видалити мітку (Delete)', () => this.deleteSelected(), 'danger');
+      }
+      return;
+    }
+
+    // Prominent "Send to Marker" button for fast sorting on giant boards
+    const hasMovableNonMarker = unlocked.some((i) => !(i.kind === 'object' && i.data.type === 'marker'));
+    if (this.isTeacher() && hasMovableNonMarker) {
+      addBtn(
+        this.markerPickerOpen ? '🚩 До мітки ▴' : '🚩 До мітки ▾',
+        'Перенести виділене прямо до обраної мітки на дошці',
+        () => {
+          this.markerPickerOpen = !this.markerPickerOpen;
+          this._renderContextBar();
+        },
+        this.markerPickerOpen ? 'anchor-active' : 'accent'
+      );
+    }
 
     if (singleObj && (singleObj.type === 'text' || singleObj.type === 'note')) {
       if (!singleObj.locked) {
@@ -1277,6 +1351,51 @@ export class SelectionManager {
       }
       addBtn('➕', 'Дублювати (Ctrl+D)', () => this.duplicateSelected());
       addBtn('🗑️', 'Видалити (Delete)', () => this.deleteSelected(), 'danger');
+    }
+
+    if (this.isTeacher() && hasMovableNonMarker && this.markerPickerOpen) {
+      const picker = document.createElement('div');
+      picker.className = 'ctx-marker-picker';
+      const targetMarkers = this.objects.getMarkers().filter((m) => !this.selectedIds.has(m.id));
+
+      if (!targetMarkers.length) {
+        const hint = document.createElement('span');
+        hint.className = 'ctx-marker-hint';
+        hint.textContent = 'На цій дошці ще немає міток.';
+        const btnNew = document.createElement('button');
+        btnNew.className = 'ctx-btn accent';
+        btnNew.textContent = '+ Створити мітку';
+        btnNew.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.markerPickerOpen = false;
+          this._renderContextBar();
+          this.onOpenMarkersMenu();
+        });
+        picker.append(hint, btnNew);
+      } else {
+        targetMarkers.forEach((m) => {
+          const chip = document.createElement('button');
+          chip.className = 'ctx-marker-chip';
+          chip.style.borderColor = m.color || '#ef4444';
+          chip.title = `Перенести виділене до мітки «${m.label}»`;
+
+          const dot = document.createElement('span');
+          dot.className = 'marker-dot';
+          dot.style.backgroundColor = m.color || '#ef4444';
+
+          const txt = document.createElement('span');
+          txt.textContent = m.label || '1';
+
+          chip.append(dot, txt);
+          chip.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.markerPickerOpen = false;
+            this.onSendSelectedToMarker(m.id);
+          });
+          picker.appendChild(chip);
+        });
+      }
+      this.toolbarEl.appendChild(picker);
     }
   }
 }

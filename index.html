@@ -61,6 +61,13 @@
               <option value="none">⬜ Чистий</option>
             </select>
           </div>
+
+          <div class="markers-wrap">
+            <button id="btn-markers-menu" class="chip-btn chip-markers" title="Мітки на дошці: ставити, переходити та переносити до них фото й текст">
+              🚩 Мітки (<span id="markers-count">0</span>)
+            </button>
+            <div id="markers-popover" class="markers-popover hidden"></div>
+          </div>
         </div>
 
         <div class="topbar-right">
@@ -139,6 +146,11 @@
         <div id="student-follow-banner" class="student-follow-banner hidden">
           🧲 Екран синхронізовано з учителем
         </div>
+
+        <!-- Return Back After Teleporting to Marker -->
+        <button id="btn-teleport-back" class="teleport-back-btn hidden teacher-only" title="Повернути камеру туди, звідки ви щойно перенеслися">
+          ↩️ Повернутись назад
+        </button>
       </div>
 
       <!-- Bottom Floating Main Toolbar -->
@@ -341,6 +353,26 @@
       </div>
       <div class="modal-body">
         <p class="modal-desc">Учитель закрив спільну дошку. Можна закривати цю вкладку!</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Edit Marker -->
+  <div id="modal-marker" class="modal-backdrop hidden">
+    <div class="modal modal-sm">
+      <div class="modal-header">
+        <h2>🚩 Редагувати мітку</h2>
+        <button class="icon-btn modal-close" data-close="modal-marker">✕</button>
+      </div>
+      <div class="modal-body">
+        <label class="field-label">Номер або назва мітки</label>
+        <input id="input-marker-label" class="input" type="text" placeholder="Наприклад: 1 або Математика" maxlength="32" />
+        <label class="field-label">Колір мітки</label>
+        <div id="modal-marker-colors" class="marker-color-row"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost modal-close" data-close="modal-marker">Скасувати</button>
+        <button id="btn-confirm-marker" class="btn btn-primary">Зберегти</button>
       </div>
     </div>
   </div>

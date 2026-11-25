@@ -1,6 +1,6 @@
 // Board objects: Images, Text (Propysy/cursive), Sticky Notes + Viewport Virtualization & Lazy Loading
 
-import { IMAGE_LIMITS, NOTE_COLORS, getFontPreset, uid } from './config.js';
+import { IMAGE_LIMITS, MARKER_COLORS, NOTE_COLORS, getFontPreset, uid } from './config.js';
 
 const VIRTUALIZE_THRESHOLD = 180;
 const MAX_UNCACHED_IMAGES_PER_VIEW = 95;
@@ -16,7 +16,8 @@ export class ObjectsManager {
     onEditStateChange,
     getNextZIndex,
     getSelectedIds = () => new Set(),
-    getAnchorObjectId = () => null
+    getAnchorObjectId = () => null,
+    onMarkersChange = () => {}
   }) {
     this.layerEl = layerEl;
     this.viewport = viewport;
@@ -27,6 +28,7 @@ export class ObjectsManager {
     this.getNextZIndex = getNextZIndex || (() => this._localMaxZ() + 1);
     this.getSelectedIds = getSelectedIds;
     this.getAnchorObjectId = getAnchorObjectId;
+    this.onMarkersChange = onMarkersChange;
 
     this.objects = [];
     this.objectMap = new Map();
@@ -68,6 +70,7 @@ export class ObjectsManager {
     this.objects = Array.isArray(list) ? list : [];
     this._rebuildObjectMap();
     this.renderAll();
+    this.onMarkersChange();
   }
 
   getObjects() {
@@ -200,19 +203,92 @@ export class ObjectsManager {
     return obj;
   }
 
+
+  getMarkers() {
+    return this.objects
+      .filter((o) => o.type === 'marker')
+      .sort((a, b) => String(a.label || '').localeCompare(String(b.label || ''), 'uk', { numeric: true, sensitivity: 'base' }));
+  }
+
+  getNextMarkerLabel() {
+    const usedNums = new Set();
+    for (const o of this.objects) {
+      if (o.type !== 'marker') continue;
+      const n = Number(String(o.label || '').trim());
+      if (Number.isInteger(n) && n > 0) usedNums.add(n);
+    }
+    let next = 1;
+    while (usedNums.has(next)) next += 1;
+    return String(next);
+  }
+
+  _calcMarkerWidth(label) {
+    const len = String(label || '').trim().length;
+    return Math.max(92, Math.min(340, Math.round(len * 11.5 + 62)));
+  }
+
+  addMarkerAt(worldPoint, label = '', color = '') {
+    const cleanLabel = String(label || '').trim() || this.getNextMarkerLabel();
+    const existingCount = this.objects.filter((o) => o.type === 'marker').length;
+    const chosenColor = color || MARKER_COLORS[existingCount % MARKER_COLORS.length];
+    const w = this._calcMarkerWidth(cleanLabel);
+    const h = 44;
+    const obj = {
+      id: uid('mrk'),
+      type: 'marker',
+      x: Math.round(worldPoint.x - w / 2),
+      y: Math.round(worldPoint.y - h / 2),
+      w,
+      h,
+      rotation: 0,
+      zIndex: this.getNextZIndex(),
+      locked: false,
+      label: cleanLabel,
+      color: chosenColor
+    };
+    this.objects.push(obj);
+    this.objectMap.set(obj.id, obj);
+    this._mountObject(obj, { allowNetwork: true });
+    this.onMarkersChange();
+    this.onMutate('add-marker', { changedObjectIds: [obj.id] });
+    return obj;
+  }
+
+  updateMarkerProps(id, { label, color }) {
+    const obj = this.getById(id);
+    if (!obj || obj.type !== 'marker') return false;
+    if (typeof label === 'string') {
+      const clean = label.trim() || this.getNextMarkerLabel();
+      obj.label = clean;
+      obj.w = this._calcMarkerWidth(clean);
+    }
+    if (typeof color === 'string' && color) {
+      obj.color = color;
+    }
+    this.updateObjectEl(obj);
+    this.onMarkersChange();
+    this.onMutate('edit-marker', { changedObjectIds: [obj.id] });
+    return true;
+  }
+
   addRawObjects(list) {
+    let hasMarker = false;
     for (const obj of list) {
+      if (obj.type === 'marker') hasMarker = true;
       this.objects.push(obj);
       this.objectMap.set(obj.id, obj);
       this._mountObject(obj, { allowNetwork: true });
       if (obj.type === 'text') this.autoFitTextHeight(obj);
     }
+    if (hasMarker) this.onMarkersChange();
   }
 
   removeIds(idSet) {
     let removed = false;
+    let removedMarker = false;
     this.objects = this.objects.filter((o) => {
       if (idSet.has(o.id)) {
+        if (o.type === 'marker') removedMarker = true;
         this._unmountObject(o.id);
         this.objectMap.delete(o.id);
         if (this.editingId === o.id) this.editingId = null;
@@ -221,6 +297,7 @@ export class ObjectsManager {
       }
       return true;
     });
+    if (removedMarker) this.onMarkersChange();
     return removed;
   }
 
@@ -434,6 +511,18 @@ export class ObjectsManager {
       placeholder.textContent = allowNetwork ? 'Завантаження...' : '🔍';
       if (!allowNetwork) placeholder.classList.add('lazy-idle');
       el.appendChild(placeholder);
+    } else if (obj.type === 'marker') {
+      el.classList.add('is-marker');
+      const pill = document.createElement('div');
+      pill.className = 'board-obj-marker';
+      const icon = document.createElement('span');
+      icon.className = 'board-obj-marker-icon';
+      icon.textContent = '🚩';
+      const txt = document.createElement('span');
+      txt.className = 'board-obj-marker-text';
+      txt.textContent = obj.label || '1';
+      pill.append(icon, txt);
+      el.appendChild(pill);
     } else if (obj.type === 'note' || obj.type === 'text') {
       const wrap = document.createElement('div');
       wrap.className = obj.type === 'note' ? 'board-obj-note' : 'board-obj-text';
@@ -527,6 +616,15 @@ export class ObjectsManager {
     const anchorBadge = el.querySelector('.anchor-indicator');
     if (anchorBadge) {
       anchorBadge.classList.toggle('hidden', obj.id !== this.getAnchorObjectId());
+    }
+
+    if (obj.type === 'marker') {
+      const pill = el.querySelector('.board-obj-marker');
+      if (pill) {
+        pill.style.backgroundColor = obj.color || '#ef4444';
+        const txt = pill.querySelector('.board-obj-marker-text');
+        if (txt) txt.textContent = obj.label || '1';
+      }
     }
 
     if (obj.type === 'note' || obj.type === 'text') {
@@ -686,7 +784,8 @@ export class ObjectsManager {
       if (pinned) return { obj: pinned, isPinned: true };
     }
     const images = this.objects.filter((o) => o.type === 'image');
-    const pool = images.length > 0 ? images : this.objects;
+    const nonMarkers = this.objects.filter((o) => o.type !== 'marker');
+    const pool = images.length > 0 ? images : (nonMarkers.length > 0 ? nonMarkers : this.objects);
     if (!pool.length) return null;
 
     const cxs = pool.map((o) => o.x + o.w / 2).sort((a, b) => a - b);
@@ -706,6 +805,16 @@ export class ObjectsManager {
       }
     }
     return { obj: best, isPinned: false };
+  }
+
+
+  ensureMounted(obj) {
+    if (!obj) return;
+    if (!this.domMap.has(obj.id)) {
+      this._mountObject(obj, { allowNetwork: true });
+    } else {
+      this.updateObjectEl(obj);
+    }
   }
 
   getBounds() {

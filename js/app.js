@@ -4,6 +4,7 @@ import {
   CLIPBOARD_MARKER_PREFIX,
   DRAW_COLORS,
   DRAW_WIDTHS,
+  MARKER_COLORS,
   STORAGE_KEYS,
   isFirebaseConfigured,
   loadFirebaseConfig,
@@ -37,6 +38,9 @@ class WhiteboardApp {
     this.autosaveTimer = null;
     this.modalBoardMode = 'create';
     this.modalBoardEditId = null;
+    this.modalMarkerEditId = null;
+    this.modalMarkerColor = MARKER_COLORS[0];
+    this.teleportReturnView = null;
 
     // Detect if opened via student invite link (?room=...&db=...)
     const params = new URLSearchParams(window.location.search);
@@ -126,6 +130,7 @@ class WhiteboardApp {
       getNextZIndex: () => this.getNextZIndex(),
       getSelectedIds: () => (this.selection ? this.selection.selectedIds : new Set()),
       getAnchorObjectId: () => this.currentBoard?.anchorObjectId || null,
+      onMarkersChange: () => this._renderMarkersUI(),
       onLiveObjectUpdate: (id) => this._pushLiveDeltaOnly({ changedObjectIds: [id] }),
       onMutate: (reason, meta) => this._onBoardMutated(reason, meta),
       onEditStateChange: () => {
@@ -161,6 +166,14 @@ class WhiteboardApp {
       getCurrentBoardId: () => this.currentBoard?.id || null,
       getAnchorObjectId: () => this.currentBoard?.anchorObjectId || null,
       onToggleAnchor: (id) => this._toggleAnchorObject(id),
+      onEditMarker: (id) => this._openMarkerModal(id),
+      onSendSelectedToMarker: (markerId) => this.sendSelectedToMarker(markerId),
+      onOpenMarkersMenu: () => this._openMarkersPopover(),
+      onSelectionChange: () => {
+        if (!$('markers-popover').classList.contains('hidden')) {
+          this._renderMarkersUI();
+        }
+      },
       onLiveTransform: (meta) => this._pushLiveDeltaOnly(meta),
       onMutate: (reason, meta) => this._onBoardMutated(reason, meta),
       onToast: (msg) => this.toast(msg)
@@ -287,6 +300,29 @@ class WhiteboardApp {
     $('btn-zoom-reset').addEventListener('click', (e) => { e.currentTarget.blur(); this.viewport.resetZoom(); });
     $('btn-zoom-home').addEventListener('click', (e) => { e.currentTarget.blur(); this.focusAnchorPhoto(); });
     $('btn-zoom-fit').addEventListener('click', (e) => { e.currentTarget.blur(); this.fitContent(); });
+    $('btn-teleport-back').addEventListener('click', (e) => { e.currentTarget.blur(); this.returnFromTeleport(); });
+
+    // Markers Popover & Modal
+    $('btn-markers-menu').addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.currentTarget.blur();
+      const pop = $('markers-popover');
+      const willOpen = pop.classList.contains('hidden');
+      if (willOpen) {
+        this._openMarkersPopover();
+      } else {
+        pop.classList.add('hidden');
+      }
+    });
+    window.addEventListener('click', (e) => {
+      if (!e.target.closest('.markers-wrap') && !e.target.closest('#object-toolbar')) {
+        $('markers-popover').classList.add('hidden');
+      }
+    });
+    $('btn-confirm-marker').addEventListener('click', () => this._confirmMarkerModal());
+    $('input-marker-label').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') this._confirmMarkerModal();
+    });
 
     $('btn-bg-theme').addEventListener('click', (e) => {
       e.currentTarget.blur();
@@ -629,6 +665,299 @@ class WhiteboardApp {
     }
 
     this.viewport.centerOnOrigin();
+  }
+
+
+  // --- MOVABLE MARKERS & TELEPORT WITH SELECTION ---
+
+  _openMarkersPopover() {
+    if (this.isStudentMode) return;
+    this._renderMarkersUI();
+    const pop = $('markers-popover');
+    pop.classList.remove('hidden');
+    const inp = pop.querySelector('.markers-add-input');
+    if (inp) {
+      setTimeout(() => {
+        inp.focus();
+        inp.select();
+      }, 30);
+    }
+  }
+
+  _renderMarkersUI() {
+    if (this.isStudentMode) return;
+    const markers = this.objects ? this.objects.getMarkers() : [];
+    const countEl = $('markers-count');
+    if (countEl) countEl.textContent = String(markers.length);
+    const btnMenu = $('btn-markers-menu');
+    if (btnMenu) btnMenu.classList.toggle('has-markers', markers.length > 0);
+
+    const pop = $('markers-popover');
+    if (!pop) return;
+    pop.innerHTML = '';
+
+    // Add marker row
+    const addRow = document.createElement('div');
+    addRow.className = 'markers-add-row';
+
+    const inp = document.createElement('input');
+    inp.className = 'input markers-add-input';
+    inp.type = 'text';
+    inp.maxLength = 32;
+    inp.placeholder = 'Номер або назва...';
+    inp.value = this.objects.getNextMarkerLabel();
+
+    const btnAdd = document.createElement('button');
+    btnAdd.className = 'btn btn-primary btn-sm';
+    btnAdd.textContent = '+ Тут';
+    btnAdd.title = 'Поставити рухому мітку в центрі поточного екрана';
+
+    const createNow = () => {
+      const label = inp.value.trim() || this.objects.getNextMarkerLabel();
+      const center = this.viewport.getCenterWorld();
+      const created = this.objects.addMarkerAt(center, label);
+      this.setTool('select', { keepSelection: true });
+      this.selection.selectOnly([created.id]);
+      this.toast(`🚩 Мітку «${created.label}» поставлено (її можна перетягувати)`);
+      pop.classList.add('hidden');
+    };
+
+    btnAdd.addEventListener('click', (e) => {
+      e.stopPropagation();
+      createNow();
+    });
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        createNow();
+      }
+    });
+
+    addRow.append(inp, btnAdd);
+    pop.appendChild(addRow);
+
+    const listEl = document.createElement('div');
+    listEl.className = 'markers-list';
+
+    if (!markers.length) {
+      const empty = document.createElement('div');
+      empty.className = 'markers-empty';
+      empty.textContent = 'Натисніть «+ Тут», щоб поставити першу мітку на потрібній ділянці дошки. Потім можна переносити до неї виділені фото й текст у 1 клік!';
+      listEl.appendChild(empty);
+      pop.appendChild(listEl);
+      return;
+    }
+
+    const selectedMovable = this.selection
+      ? this.selection.getSelectedItems().filter((i) => !i.data.locked && !(i.kind === 'object' && i.data.type === 'marker'))
+      : [];
+
+    for (const m of markers) {
+      const row = document.createElement('div');
+      row.className = 'marker-row';
+
+      const jumpBtn = document.createElement('button');
+      jumpBtn.className = 'marker-jump-btn';
+      jumpBtn.title = `Перейти до мітки «${m.label}»`;
+
+      const dot = document.createElement('span');
+      dot.className = 'marker-dot';
+      dot.style.backgroundColor = m.color || '#ef4444';
+
+      const lbl = document.createElement('span');
+      lbl.className = 'marker-jump-label';
+      lbl.textContent = m.label || '1';
+
+      jumpBtn.append(dot, lbl);
+      jumpBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        pop.classList.add('hidden');
+        this.jumpToMarker(m.id);
+      });
+
+      const actions = document.createElement('div');
+      actions.className = 'marker-row-actions';
+
+      if (selectedMovable.length > 0 && !this.selection.selectedIds.has(m.id)) {
+        const sendBtn = document.createElement('button');
+        sendBtn.className = 'marker-send-mini';
+        sendBtn.textContent = '📦 Сюди';
+        sendBtn.title = `Перенести виділене (${selectedMovable.length}) до мітки «${m.label}»`;
+        sendBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          pop.classList.add('hidden');
+          this.sendSelectedToMarker(m.id);
+        });
+        actions.appendChild(sendBtn);
+      }
+
+      const editBtn = document.createElement('button');
+      editBtn.className = 'board-mini-btn';
+      editBtn.textContent = '✏️';
+      editBtn.title = 'Перейменувати / змінити колір мітки';
+      editBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        pop.classList.add('hidden');
+        this._openMarkerModal(m.id);
+      });
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'board-mini-btn danger';
+      delBtn.textContent = '🗑️';
+      delBtn.title = 'Видалити мітку';
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = m.id;
+        this.objects.removeIds(new Set([id]));
+        this.selection.selectedIds.delete(id);
+        this.selection.render();
+        this._onBoardMutated('delete-marker', { deletedObjectIds: [id] });
+        this._renderMarkersUI();
+      });
+
+      actions.append(editBtn, delBtn);
+      row.append(jumpBtn, actions);
+      listEl.appendChild(row);
+    }
+
+    pop.appendChild(listEl);
+  }
+
+  _saveTeleportReturnView() {
+    this.teleportReturnView = {
+      x: this.viewport.x,
+      y: this.viewport.y,
+      zoom: this.viewport.zoom
+    };
+    $('btn-teleport-back').classList.remove('hidden');
+  }
+
+  jumpToMarker(markerId) {
+    const marker = this.objects.getById(markerId);
+    if (!marker || marker.type !== 'marker') return;
+    this._saveTeleportReturnView();
+    const targetZ = Math.min(1.0, Math.max(0.45, this.viewport.zoom));
+    const rect = $('viewport').getBoundingClientRect();
+    const cx = marker.x + marker.w / 2;
+    const cy = marker.y + marker.h / 2 + 120;
+    this.viewport.setView(rect.width / 2 - cx * targetZ, rect.height / 2 - cy * targetZ, targetZ, true);
+    this.objects.syncVisibleObjects();
+    this.toast(`🚩 Перехід до мітки «${marker.label}»`);
+  }
+
+  sendSelectedToMarker(markerId) {
+    if (this.isStudentMode) return;
+    const marker = this.objects.getById(markerId);
+    if (!marker || marker.type !== 'marker') return;
+
+    const movable = this.selection
+      .getSelectedItems()
+      .filter((i) => !i.data.locked && !(i.kind === 'object' && i.data.id === markerId));
+
+    if (!movable.length) {
+      this.toast('Немає розблокованих об’єктів для перенесення');
+      return;
+    }
+
+    this._saveTeleportReturnView();
+
+    const bounds = this.selection.getSelectionBounds(movable);
+    if (!bounds) return;
+
+    const selW = bounds.maxX - bounds.minX;
+    const selH = bounds.maxY - bounds.minY;
+    const dx = Math.round((marker.x + marker.w / 2) - (bounds.minX + selW / 2));
+    const dy = Math.round((marker.y + marker.h + 24) - bounds.minY);
+
+    const changedObjectIds = [];
+    const changedStrokeIds = [];
+
+    for (const it of movable) {
+      if (it.kind === 'object') {
+        it.data.x = Math.round(it.data.x + dx);
+        it.data.y = Math.round(it.data.y + dy);
+        this.objects.ensureMounted(it.data);
+        changedObjectIds.push(it.data.id);
+      } else {
+        this.drawing.translateStrokeInPlace(it.data, dx, dy);
+        this.drawing.updateStrokeEl(it.data);
+        changedStrokeIds.push(it.data.id);
+      }
+    }
+
+    // Frame both the marker and the newly arrived items cleanly on screen
+    const combMinX = Math.min(marker.x, bounds.minX + dx);
+    const combMaxX = Math.max(marker.x + marker.w, bounds.maxX + dx);
+    const combMinY = Math.min(marker.y, bounds.minY + dy);
+    const combMaxY = Math.max(marker.y + marker.h, bounds.maxY + dy);
+
+    this.viewport.focusOnRect(
+      combMinX,
+      combMinY,
+      Math.max(180, combMaxX - combMinX),
+      Math.max(180, combMaxY - combMinY),
+      { maxZoom: 0.95, minTargetZoom: 0.22, fillRatio: 0.62 }
+    );
+    this.objects.syncVisibleObjects();
+    this.selection.render();
+    this._onBoardMutated('move-to-marker', { changedObjectIds, changedStrokeIds });
+    this.toast(`🚩 Перенесено до мітки «${marker.label}» — розставте й натисніть ↩️`);
+  }
+
+  returnFromTeleport() {
+    if (!this.teleportReturnView) {
+      $('btn-teleport-back').classList.add('hidden');
+      return;
+    }
+    const v = this.teleportReturnView;
+    this.teleportReturnView = null;
+    $('btn-teleport-back').classList.add('hidden');
+    this.selection.clear();
+    this.viewport.setView(v.x, v.y, v.zoom, true);
+    this.objects.syncVisibleObjects();
+    this.toast('↩️ Повернуто на попереднє місце');
+  }
+
+  _openMarkerModal(markerId) {
+    const marker = this.objects.getById(markerId);
+    if (!marker || marker.type !== 'marker') return;
+    this.modalMarkerEditId = markerId;
+    this.modalMarkerColor = marker.color || MARKER_COLORS[0];
+    $('input-marker-label').value = marker.label || '';
+
+    const colorsEl = $('modal-marker-colors');
+    colorsEl.innerHTML = '';
+    MARKER_COLORS.forEach((col) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `marker-color-swatch ${col === this.modalMarkerColor ? 'active' : ''}`;
+      btn.style.backgroundColor = col;
+      btn.addEventListener('click', () => {
+        this.modalMarkerColor = col;
+        colorsEl.querySelectorAll('.marker-color-swatch').forEach((b) => b.classList.remove('active'));
+        btn.classList.add('active');
+      });
+      colorsEl.appendChild(btn);
+    });
+
+    $('modal-marker').classList.remove('hidden');
+    setTimeout(() => {
+      const inp = $('input-marker-label');
+      inp.focus();
+      inp.select();
+    }, 40);
+  }
+
+  _confirmMarkerModal() {
+    $('modal-marker').classList.add('hidden');
+    if (!this.modalMarkerEditId) return;
+    const label = $('input-marker-label').value.trim();
+    this.objects.updateMarkerProps(this.modalMarkerEditId, {
+      label: label || this.objects.getNextMarkerLabel(),
+      color: this.modalMarkerColor
+    });
+    this.selection.render();
+    this.modalMarkerEditId = null;
   }
 
   // --- BOOT MODES ---
@@ -978,6 +1307,10 @@ class WhiteboardApp {
       this.history.maxSteps = isHugeBoard ? 10 : 60;
       this.history.reset(this._getSnapshot());
       this.isDirty = false;
+      this.teleportReturnView = null;
+      $('btn-teleport-back').classList.add('hidden');
+      $('markers-popover').classList.add('hidden');
+      this._renderMarkersUI();
 
       this.setStatus(this.storage.isCloudReady() ? 'saved' : 'local',
         this.storage.isCloudReady() ? 'Збережено ✓' : 'Локально');
@@ -1325,6 +1658,8 @@ class WhiteboardApp {
       this.selection.clear();
       $('modal-settings').classList.add('hidden');
       $('modal-board').classList.add('hidden');
+      $('modal-marker').classList.add('hidden');
+      $('markers-popover').classList.add('hidden');
       return;
     }
 
@@ -1410,6 +1745,11 @@ class WhiteboardApp {
       }
       if (e.key === 'Enter' && this.selection.selectedIds.size === 1) {
         const items = this.selection.getSelectedItems();
+        if (items[0].kind === 'object' && items[0].data.type === 'marker' && !items[0].data.locked && !this.isStudentMode) {
+          e.preventDefault();
+          this._openMarkerModal(items[0].data.id);
+          return;
+        }
         if (items[0].kind === 'object' && (items[0].data.type === 'text' || items[0].data.type === 'note') && !items[0].data.locked) {
           e.preventDefault();
           this.objects.startEditing(items[0].data.id);

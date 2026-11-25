@@ -236,6 +236,7 @@ export class LiveSessionManager {
     const objectsMap = {};
     const assetsMap = {};
     for (const o of board.objects || []) {
+      if (o.type === 'marker') continue;
       const cleanObj = stripUndefined(o);
       delete cleanObj.inlineDataUrl;
       objectsMap[o.id] = { ...cleanObj, _by: 'teacher', _ts: now };
@@ -578,6 +579,7 @@ export class LiveSessionManager {
     if (fullSync) {
       const cleanObjs = {};
       for (const [id, o] of Object.entries(objectsMap)) {
+        if (o.type === 'marker') continue;
         const c = stripUndefined(o);
         delete c.inlineDataUrl;
         cleanObjs[id] = { ...c, _by: by, _ts: now };
@@ -597,7 +599,7 @@ export class LiveSessionManager {
 
     for (const id of changedObjectIds || []) {
       const o = objectsMap[id];
-      if (!o) continue;
+      if (!o || o.type === 'marker') continue;
       const c = stripUndefined(o);
       delete c.inlineDataUrl;
       updates[`objects/${id}`] = { ...c, _by: by, _ts: now };

@@ -1,4 +1,4 @@
-// Boards list sidebar, folders/tags, search, create, rename, duplicate, delete + multi-tab safe index merge
+// Boards list sidebar, folders/tags, search, create, rename, duplicate, delete + Drag & Drop Custom Order
 
 import { uid } from './config.js';
 
@@ -11,6 +11,23 @@ function formatShortDate(iso) {
   } catch {
     return '';
   }
+}
+
+function applyReorderInPlace(boardsList, draggedId, targetId, position) {
+  if (!draggedId || !targetId || draggedId === targetId) return false;
+  const fromIdx = boardsList.findIndex((b) => b.id === draggedId);
+  const targetIdx = boardsList.findIndex((b) => b.id === targetId);
+  if (fromIdx === -1 || targetIdx === -1) return false;
+
+  const [moved] = boardsList.splice(fromIdx, 1);
+  let insertIdx = boardsList.findIndex((b) => b.id === targetId);
+  if (insertIdx === -1) {
+    boardsList.push(moved);
+    return true;
+  }
+  if (position === 'after') insertIdx += 1;
+  boardsList.splice(insertIdx, 0, moved);
+  return true;
 }
 
 export class BoardsManager {
@@ -27,6 +44,7 @@ export class BoardsManager {
     this.activeBoardId = null;
     this.activeFolder = 'ALL';
     this.searchQuery = '';
+    this.draggingId = null;
 
     this.searchEl.addEventListener('input', () => {
       this.searchQuery = this.searchEl.value.trim().toLowerCase();
@@ -105,13 +123,46 @@ export class BoardsManager {
     });
   }
 
+  // Preserves custom drag-and-drop sequence (does NOT re-sort by date!)
   async touchBoard(id) {
     await this._mutateIndexSafely((idx) => {
       const meta = idx.boards.find((b) => b.id === id);
       if (!meta) return;
       meta.updatedAt = new Date().toISOString();
-      idx.boards.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
     });
+  }
+
+  async reorderBoard(draggedId, targetId, position = 'before') {
+    if (!draggedId || !targetId || draggedId === targetId) return;
+    // Optimistic local reorder for instant feedback
+    const changed = applyReorderInPlace(this.index.boards, draggedId, targetId, position);
+    if (!changed) return;
+    this.render();
+
+    // Persist safely to GitHub / localStorage, keeping any newly added boards from other tabs
+    const desiredOrderIds = this.index.boards.map((b) => b.id);
+    try {
+      await this._mutateIndexSafely((idx) => {
+        const byId = new Map(idx.boards.map((b) => [b.id, b]));
+        const reordered = [];
+        for (const id of desiredOrderIds) {
+          if (byId.has(id)) {
+            reordered.push(byId.get(id));
+            byId.delete(id);
+          }
+        }
+        // Keep any brand-new boards created in another tab at the top
+        if (byId.size > 0) {
+          idx.boards = [...byId.values(), ...reordered];
+        } else {
+          idx.boards = reordered;
+        }
+      });
+      this.onToast('Порядок дошок збережено');
+    } catch (err) {
+      console.error('Reorder save error:', err);
+      this.onToast('Не вдалося зберегти порядок дошок');
+    }
   }
 
   async duplicateBoard(id, openAfter = true) {
@@ -174,6 +225,12 @@ export class BoardsManager {
     return [...set].sort((a, b) => a.localeCompare(b, 'uk'));
   }
 
+  _clearDragClasses() {
+    this.listEl.querySelectorAll('.board-item').forEach((el) => {
+      el.classList.remove('dragging', 'drag-over-top', 'drag-over-bottom');
+    });
+  }
+
   render() {
     const folders = this.getUniqueFolders();
 
@@ -221,13 +278,25 @@ export class BoardsManager {
     for (const b of filtered) {
       const card = document.createElement('div');
       card.className = `board-item ${b.id === this.activeBoardId ? 'active' : ''}`;
+      card.dataset.boardId = b.id;
+      card.draggable = true;
 
       const top = document.createElement('div');
       top.className = 'board-item-top';
 
+      const titleWrap = document.createElement('div');
+      titleWrap.className = 'board-item-title-wrap';
+
+      const grip = document.createElement('span');
+      grip.className = 'board-drag-handle';
+      grip.textContent = '⋮⋮';
+      grip.title = 'Потягніть, щоб змінити порядок дошки';
+
       const title = document.createElement('div');
       title.className = 'board-item-title';
       title.textContent = b.title;
+
+      titleWrap.append(grip, title);
 
       const actions = document.createElement('div');
       actions.className = 'board-item-actions';
@@ -236,6 +305,7 @@ export class BoardsManager {
       btnEdit.className = 'board-mini-btn';
       btnEdit.textContent = '✏️';
       btnEdit.title = 'Перейменувати / змінити папку';
+      btnEdit.draggable = false;
       btnEdit.addEventListener('click', (e) => {
         e.stopPropagation();
         window.dispatchEvent(new CustomEvent('open-board-modal', { detail: { mode: 'edit', board: b } }));
@@ -245,6 +315,7 @@ export class BoardsManager {
       btnDup.className = 'board-mini-btn';
       btnDup.textContent = '📋';
       btnDup.title = 'Зробити копію дошки';
+      btnDup.draggable = false;
       btnDup.addEventListener('click', (e) => {
         e.stopPropagation();
         this.duplicateBoard(b.id, true);
@@ -254,13 +325,14 @@ export class BoardsManager {
       btnDel.className = 'board-mini-btn danger';
       btnDel.textContent = '🗑️';
       btnDel.title = 'Видалити дошку';
+      btnDel.draggable = false;
       btnDel.addEventListener('click', (e) => {
         e.stopPropagation();
         this.deleteBoard(b.id);
       });
 
       actions.append(btnEdit, btnDup, btnDel);
-      top.append(title, actions);
+      top.append(titleWrap, actions);
 
       const meta = document.createElement('div');
       meta.className = 'board-item-meta';
@@ -275,6 +347,53 @@ export class BoardsManager {
         if (b.id !== this.activeBoardId) {
           this.onSelectBoard(b.id);
         }
+      });
+
+      // Drag & Drop handlers for reordering
+      card.addEventListener('dragstart', (e) => {
+        if (e.target && e.target.closest && e.target.closest('.board-item-actions')) {
+          e.preventDefault();
+          return;
+        }
+        this.draggingId = b.id;
+        card.classList.add('dragging');
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', b.id);
+        }
+      });
+
+      card.addEventListener('dragover', (e) => {
+        if (!this.draggingId || this.draggingId === b.id) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        const rect = card.getBoundingClientRect();
+        const isTop = e.clientY < rect.top + rect.height / 2;
+        card.classList.toggle('drag-over-top', isTop);
+        card.classList.toggle('drag-over-bottom', !isTop);
+      });
+
+      card.addEventListener('dragleave', () => {
+        card.classList.remove('drag-over-top', 'drag-over-bottom');
+      });
+
+      card.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const draggedId = this.draggingId || e.dataTransfer?.getData('text/plain');
+        if (!draggedId || draggedId === b.id) {
+          this._clearDragClasses();
+          return;
+        }
+        const rect = card.getBoundingClientRect();
+        const pos = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+        this.draggingId = null;
+        this._clearDragClasses();
+        this.reorderBoard(draggedId, b.id, pos);
+      });
+
+      card.addEventListener('dragend', () => {
+        this.draggingId = null;
+        this._clearDragClasses();
       });
 
       this.listEl.appendChild(card);

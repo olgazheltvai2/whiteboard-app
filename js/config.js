@@ -111,6 +111,16 @@ export const NOTE_COLORS = [
   { bg: '#e3d1ff', text: '#25173b' }
 ];
 
+export const MARKER_COLORS = [
+  '#ef4444',
+  '#3b82f6',
+  '#10b981',
+  '#f59e0b',
+  '#a855f7',
+  '#06b6d4',
+  '#ec4899'
+];
+
 export const STUDENT_COLORS = [
   '#ff6b6b',
   '#4ecdc4',
