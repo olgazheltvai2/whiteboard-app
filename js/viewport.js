@@ -1,3 +1,13 @@
+function hexToRgb(hex) {
+  const clean = String(hex || '').trim().replace('#', '');
+  if (!/^[0-9a-fA-F]{6}$/.test(clean)) return null;
+  return {
+    r: parseInt(clean.slice(0, 2), 16),
+    g: parseInt(clean.slice(2, 4), 16),
+    b: parseInt(clean.slice(4, 6), 16)
+  };
+}
+
 // Infinite canvas: mouse wheel, 2-finger pinch-zoom & pan, cross-device camera fitting
 
 export class ViewportController {
@@ -298,12 +308,63 @@ export class ViewportController {
     if (notify) this.onViewChange();
   }
 
-  setBackground(theme = 'dark', pattern = 'dots') {
+  setBackground(theme = 'dark', pattern = 'dots', bgStyle = null) {
+    const t = theme === 'light' ? 'light' : 'dark';
+    const p = pattern || 'dots';
     this.viewportEl.classList.remove(
       'bg-dark', 'bg-light',
       'pattern-none', 'pattern-dots', 'pattern-grid', 'pattern-lines', 'pattern-propysy'
     );
-    this.viewportEl.classList.add(theme === 'light' ? 'bg-light' : 'bg-dark');
-    this.viewportEl.classList.add(`pattern-${pattern || 'dots'}`);
+    this.viewportEl.classList.add(t === 'light' ? 'bg-light' : 'bg-dark');
+    this.viewportEl.classList.add(`pattern-${p}`);
+
+    if (p === 'none') {
+      this.viewportEl.style.backgroundImage = 'none';
+      return;
+    }
+
+    const customHex = bgStyle && typeof bgStyle.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(bgStyle.color.trim())
+      ? bgStyle.color.trim()
+      : '';
+    const defaultHex = p === 'propysy'
+      ? (t === 'light' ? '#4a86cf' : '#99b9e6')
+      : (t === 'light' ? '#334155' : '#e2e8f0');
+    const hex = customHex || defaultHex;
+    const rgb = hexToRgb(hex) || { r: 148, g: 163, b: 184 };
+
+    const rawOp = bgStyle && typeof bgStyle.opacity === 'number' ? bgStyle.opacity : 0.34;
+    const opacity = Math.min(1, Math.max(0.08, rawOp));
+
+    const rawThick = bgStyle && typeof bgStyle.thickness === 'number' ? bgStyle.thickness : 1.5;
+    const thick = Math.min(4.5, Math.max(0.8, rawThick));
+
+    const rgba = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${opacity.toFixed(2)})`;
+
+    if (p === 'dots') {
+      const r = Math.max(1.0, Number((thick * 0.95).toFixed(2)));
+      const fade = Number((r + 0.45).toFixed(2));
+      this.viewportEl.style.backgroundImage = `radial-gradient(circle, ${rgba} ${r}px, transparent ${fade}px)`;
+    } else if (p === 'grid') {
+      this.viewportEl.style.backgroundImage =
+        `linear-gradient(to right, ${rgba} ${thick}px, transparent ${thick}px), ` +
+        `linear-gradient(to bottom, ${rgba} ${thick}px, transparent ${thick}px)`;
+    } else if (p === 'lines') {
+      this.viewportEl.style.backgroundImage = `linear-gradient(to bottom, ${rgba} ${thick}px, transparent ${thick}px)`;
+    } else if (p === 'propysy') {
+      const encHex = hex.replace('#', '%23');
+      const mainOp = Math.min(1, Math.max(0.1, opacity)).toFixed(2);
+      const slantOp = Math.min(1, Math.max(0.08, opacity * 0.65)).toFixed(2);
+      const subOp = Math.min(1, Math.max(0.06, opacity * 0.48)).toFixed(2);
+      const mainW = thick.toFixed(2);
+      const slantW = Math.max(0.7, thick * 0.8).toFixed(2);
+      const subW = Math.max(0.6, thick * 0.65).toFixed(2);
+      this.viewportEl.style.backgroundImage =
+        `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='34' height='72' viewBox='0 0 34 72'%3E` +
+        `%3Cline x1='34' y1='0' x2='0' y2='72' stroke='${encHex}' stroke-opacity='${slantOp}' stroke-width='${slantW}'/%3E` +
+        `%3Cline x1='0' y1='24' x2='34' y2='24' stroke='${encHex}' stroke-opacity='${mainOp}' stroke-width='${mainW}'/%3E` +
+        `%3Cline x1='0' y1='48' x2='34' y2='48' stroke='${encHex}' stroke-opacity='${mainOp}' stroke-width='${mainW}'/%3E` +
+        `%3Cline x1='0' y1='71.5' x2='34' y2='71.5' stroke='${encHex}' stroke-opacity='${subOp}' stroke-width='${subW}'/%3E` +
+        `%3C/svg%3E")`;
+    }
   }
 }

@@ -847,7 +847,7 @@ export class SelectionManager {
     return true;
   }
 
-  pasteInternal(customPayload = null, { centerInViewport = false } = {}) {
+  pasteInternal(customPayload = null, { centerInViewport = false, targetPoint = null } = {}) {
     if (!this.canEditObjects()) return false;
     const payload = customPayload || this.clipboard;
     if (!payload || (!payload.objects.length && !payload.strokes.length)) return false;
@@ -856,7 +856,7 @@ export class SelectionManager {
     let dx = customPayload ? 26 : 26 * this.pasteCount;
     let dy = dx;
 
-    if (centerInViewport) {
+    if (targetPoint || centerInViewport) {
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       for (const o of payload.objects || []) {
         minX = Math.min(minX, o.x);
@@ -872,9 +872,9 @@ export class SelectionManager {
         maxY = Math.max(maxY, b.maxY);
       }
       if (isFinite(minX) && isFinite(minY)) {
-        const center = this.viewport.getCenterWorld();
-        dx = Math.round(center.x - (minX + maxX) / 2);
-        dy = Math.round(center.y - (minY + maxY) / 2);
+        const dest = targetPoint || this.viewport.getCenterWorld();
+        dx = Math.round(dest.x - (minX + maxX) / 2);
+        dy = Math.round(dest.y - (minY + maxY) / 2);
       }
     }
 

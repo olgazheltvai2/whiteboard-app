@@ -1702,3 +1702,217 @@ body.student-mode .board-obj.is-marker {
   box-shadow: 0 0 0 2px var(--accent);
   transform: scale(1.1);
 }
+
+/* === v9: Background Pattern Line Controls (Color, Contrast, Thickness) === */
+.bg-style-wrap {
+  position: relative;
+}
+
+.bg-style-popover {
+  position: absolute;
+  top: 38px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 248px;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  z-index: 80;
+}
+
+.bg-style-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bg-style-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ui-text-muted);
+}
+
+.bg-style-val {
+  color: var(--ui-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.bg-line-swatches {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bg-line-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ui-text);
+  background: var(--ui-surface-2);
+  transition: transform 0.12s, border-color 0.12s;
+}
+
+.bg-line-swatch:hover {
+  transform: scale(1.1);
+}
+
+.bg-line-swatch.active {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.bg-color-input {
+  width: 28px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--ui-border);
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.bg-range {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin: 0;
+}
+
+.bg-style-footer {
+  padding-top: 4px;
+  border-top: 1px solid var(--ui-border);
+}
+
+/* === v9: Right Markers Sidebar (Single-column scrollable + collapsible + drag-reorder) === */
+.markers-sidebar {
+  width: 244px;
+  min-width: 244px;
+  background: var(--ui-surface);
+  border-left: 1px solid var(--ui-border);
+  display: flex;
+  flex-direction: column;
+  z-index: 30;
+  transition: margin-right 0.2s ease, opacity 0.2s ease;
+}
+
+.markers-sidebar.collapsed {
+  margin-right: -244px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.markers-sidebar-add {
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid var(--ui-border);
+}
+
+.markers-sidebar-list {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.markers-sidebar-list .marker-row {
+  padding: 6px 7px;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.marker-drag-handle {
+  color: var(--ui-text-muted);
+  opacity: 0.45;
+  font-size: 13px;
+  line-height: 1;
+  cursor: grab;
+  user-select: none;
+  flex-shrink: 0;
+  letter-spacing: -1px;
+  padding: 2px 1px;
+}
+
+.marker-row:hover .marker-drag-handle {
+  opacity: 0.9;
+}
+
+.marker-row.dragging {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+
+.marker-row.drag-over-top {
+  box-shadow: inset 0 2.5px 0 0 var(--accent);
+}
+
+.marker-row.drag-over-bottom {
+  box-shadow: inset 0 -2.5px 0 0 var(--accent);
+}
+
+.chip-markers.panel-open {
+  border-color: rgba(245, 158, 11, 0.75);
+  background: rgba(245, 158, 11, 0.22);
+  color: #ffe09a;
+}
+
+.markers-edge-tab {
+  position: absolute;
+  top: 64px;
+  right: 0;
+  z-index: 28;
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-right: none;
+  border-radius: 10px 0 0 10px;
+  color: var(--ui-text);
+  padding: 8px 9px 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow-float);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: background 0.15s, border-color 0.15s, padding-right 0.15s;
+}
+
+.markers-edge-tab:hover {
+  background: var(--ui-surface-hover);
+  border-color: rgba(245, 158, 11, 0.65);
+  padding-right: 13px;
+}
+
+body.student-mode #markers-sidebar,
+body.student-mode #btn-open-markers-tab {
+  display: none !important;
+}
+
+@media (max-width: 960px) {
+  .markers-sidebar {
+    position: fixed;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 60;
+    box-shadow: var(--shadow-float);
+  }
+}

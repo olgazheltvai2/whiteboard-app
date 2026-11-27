@@ -9,7 +9,8 @@ export const STORAGE_KEYS = {
   DEFAULT_FONT: 'whiteboard_default_font_v1',
   SHARED_CLIPBOARD: 'whiteboard_shared_clipboard_v1',
   ACTIVE_LIVE_ROOMS: 'whiteboard_active_live_rooms_v1',
-  LAST_ROOM_SWEEP: 'whiteboard_last_room_sweep_v1'
+  LAST_ROOM_SWEEP: 'whiteboard_last_room_sweep_v1',
+  MARKERS_PANEL_COLLAPSED: 'whiteboard_markers_collapsed_v1'
 };
 
 export const LIVE_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -84,6 +85,24 @@ export const FONT_PRESETS = [
 export function getFontPreset(id) {
   return FONT_PRESETS.find((f) => f.id === id) || FONT_PRESETS[0];
 }
+
+
+export const DEFAULT_BG_STYLE = {
+  color: '',
+  opacity: 0.34,
+  thickness: 1.5
+};
+
+export const BG_LINE_COLORS = [
+  { id: 'auto', label: 'Авто', value: '' },
+  { id: 'white', label: 'Білий', value: '#ffffff' },
+  { id: 'slate', label: 'Сірий', value: '#94a3b8' },
+  { id: 'sky', label: 'Блакитний', value: '#60a5fa' },
+  { id: 'blue', label: 'Синій зошит', value: '#2563eb' },
+  { id: 'green', label: 'Зелений', value: '#34d399' },
+  { id: 'amber', label: 'Теплий', value: '#f59e0b' },
+  { id: 'dark', label: 'Темний', value: '#1e293b' }
+];
 
 export const DRAW_COLORS = [
   '#ffffff',

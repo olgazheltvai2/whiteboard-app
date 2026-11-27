@@ -1,7 +1,9 @@
 // Main application controller: wires modules, Live Firebase collaboration (24h TTL), Lazy Loading, Anchor & Cross-Account Clipboard
 
 import {
+  BG_LINE_COLORS,
   CLIPBOARD_MARKER_PREFIX,
+  DEFAULT_BG_STYLE,
   DRAW_COLORS,
   DRAW_WIDTHS,
   MARKER_COLORS,
@@ -41,6 +43,13 @@ class WhiteboardApp {
     this.modalMarkerEditId = null;
     this.modalMarkerColor = MARKER_COLORS[0];
     this.teleportHistory = [];
+    this.draggingMarkerId = null;
+
+    // Track cursor position inside viewport so Ctrl+V always pastes right under the cursor
+    this.lastPointerClient = null;
+    this.isPointerInViewport = false;
+    this._lastPasteKey = '';
+    this._consecutivePasteAtSameSpot = 0;
 
     // Detect if opened via student invite link (?room=...&db=...)
     const params = new URLSearchParams(window.location.search);
@@ -168,9 +177,9 @@ class WhiteboardApp {
       onToggleAnchor: (id) => this._toggleAnchorObject(id),
       onEditMarker: (id) => this._openMarkerModal(id),
       onSendSelectedToMarker: (markerId) => this.sendSelectedToMarker(markerId),
-      onOpenMarkersMenu: () => this._openMarkersPopover(),
+      onOpenMarkersMenu: () => this._openMarkersSidebar(true),
       onSelectionChange: () => {
-        if (!$('markers-popover').classList.contains('hidden')) {
+        if (!this.isStudentMode) {
           this._renderMarkersUI();
         }
       },
@@ -256,6 +265,34 @@ class WhiteboardApp {
       });
       widthsEl.appendChild(btn);
     });
+
+    const bgSwatchesEl = $('bg-line-swatches');
+    BG_LINE_COLORS.forEach((c) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'bg-line-swatch';
+      btn.dataset.color = c.value;
+      btn.title = c.label;
+      if (c.value) {
+        btn.style.backgroundColor = c.value;
+      } else {
+        btn.textContent = 'A';
+      }
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._updateBgStyle({ color: c.value });
+      });
+      bgSwatchesEl.appendChild(btn);
+    });
+
+    // Restore right markers sidebar collapsed preference
+    if (!this.isStudentMode) {
+      const savedCollapsed = localStorage.getItem(STORAGE_KEYS.MARKERS_PANEL_COLLAPSED);
+      const startCollapsed = savedCollapsed === null
+        ? window.innerWidth <= 960
+        : savedCollapsed === '1';
+      this._setMarkersSidebarCollapsed(startCollapsed, false);
+    }
   }
 
   _bindEvents() {
@@ -302,26 +339,78 @@ class WhiteboardApp {
     $('btn-zoom-fit').addEventListener('click', (e) => { e.currentTarget.blur(); this.fitContent(); });
     $('btn-teleport-back').addEventListener('click', (e) => { e.currentTarget.blur(); this.returnFromTeleport(); });
 
-    // Markers Popover & Modal
+    // Right Markers Sidebar & Modal
     $('btn-markers-menu').addEventListener('click', (e) => {
       e.stopPropagation();
       e.currentTarget.blur();
-      const pop = $('markers-popover');
-      const willOpen = pop.classList.contains('hidden');
-      if (willOpen) {
-        this._openMarkersPopover();
-      } else {
-        pop.classList.add('hidden');
-      }
+      const isCollapsed = $('markers-sidebar').classList.contains('collapsed');
+      this._setMarkersSidebarCollapsed(!isCollapsed, true);
     });
-    window.addEventListener('click', (e) => {
-      if (!e.target.closest('.markers-wrap') && !e.target.closest('#object-toolbar')) {
-        $('markers-popover').classList.add('hidden');
+    $('btn-collapse-markers').addEventListener('click', (e) => {
+      e.currentTarget.blur();
+      this._setMarkersSidebarCollapsed(true, true);
+    });
+    $('btn-open-markers-tab').addEventListener('click', (e) => {
+      e.currentTarget.blur();
+      this._setMarkersSidebarCollapsed(false, true);
+    });
+    const addMarkerFromSidebar = () => {
+      if (this.isStudentMode) return;
+      const inp = $('input-new-marker');
+      const label = inp.value.trim() || this.objects.getNextMarkerLabel();
+      const center = this.viewport.getCenterWorld();
+      const created = this.objects.addMarkerAt(center, label);
+      inp.value = '';
+      this.setTool('select', { keepSelection: true });
+      this.selection.selectOnly([created.id]);
+      this.toast(`🚩 Мітку «${created.label}» поставлено (її можна перетягувати)`);
+    };
+    $('btn-add-marker-here').addEventListener('click', (e) => {
+      e.currentTarget.blur();
+      addMarkerFromSidebar();
+    });
+    $('input-new-marker').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        addMarkerFromSidebar();
       }
     });
     $('btn-confirm-marker').addEventListener('click', () => this._confirmMarkerModal());
     $('input-marker-label').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') this._confirmMarkerModal();
+    });
+
+    // Background Line Style Popover (Color, Contrast, Thickness)
+    $('btn-bg-style').addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.currentTarget.blur();
+      const pop = $('bg-style-popover');
+      const willOpen = pop.classList.contains('hidden');
+      if (willOpen) {
+        this._syncBgStyleControlsUI();
+        pop.classList.remove('hidden');
+      } else {
+        pop.classList.add('hidden');
+      }
+    });
+    $('bg-style-popover').addEventListener('click', (e) => e.stopPropagation());
+    window.addEventListener('click', (e) => {
+      if (!e.target.closest('.bg-style-wrap')) {
+        $('bg-style-popover').classList.add('hidden');
+      }
+    });
+    $('input-bg-line-color').addEventListener('input', (e) => {
+      this._updateBgStyle({ color: e.target.value });
+    });
+    $('range-bg-opacity').addEventListener('input', (e) => {
+      this._updateBgStyle({ opacity: Number(e.target.value) / 100 });
+    });
+    $('range-bg-thickness').addEventListener('input', (e) => {
+      this._updateBgStyle({ thickness: Number(e.target.value) });
+    });
+    $('btn-bg-style-reset').addEventListener('click', () => {
+      this._updateBgStyle({ ...DEFAULT_BG_STYLE });
+      this.toast('Налаштування ліній фону скинуто');
     });
 
     $('btn-bg-theme').addEventListener('click', (e) => {
@@ -452,7 +541,22 @@ class WhiteboardApp {
     });
 
     const vp = $('viewport');
-    vp.addEventListener('pointerdown', (e) => this._onViewportPointerDown(e));
+    vp.addEventListener('pointerenter', (e) => {
+      this.isPointerInViewport = true;
+      this.lastPointerClient = { x: e.clientX, y: e.clientY };
+    });
+    vp.addEventListener('pointermove', (e) => {
+      this.isPointerInViewport = true;
+      this.lastPointerClient = { x: e.clientX, y: e.clientY };
+    });
+    vp.addEventListener('pointerleave', () => {
+      this.isPointerInViewport = false;
+    });
+    vp.addEventListener('pointerdown', (e) => {
+      this.isPointerInViewport = true;
+      this.lastPointerClient = { x: e.clientX, y: e.clientY };
+      this._onViewportPointerDown(e);
+    });
     window.addEventListener('pointermove', (e) => this._onViewportPointerMove(e));
     window.addEventListener('pointerup', (e) => this._onViewportPointerUp(e));
     window.addEventListener('pointercancel', (e) => this._onViewportPointerUp(e));
@@ -509,6 +613,26 @@ class WhiteboardApp {
     });
   }
 
+  _getPasteWorldPoint() {
+    const base = (this.isPointerInViewport && this.lastPointerClient)
+      ? this.viewport.screenToWorld(this.lastPointerClient.x, this.lastPointerClient.y)
+      : this.viewport.getCenterWorld();
+
+    const key = `${Math.round(base.x)}_${Math.round(base.y)}`;
+    if (key === this._lastPasteKey) {
+      this._consecutivePasteAtSameSpot += 1;
+    } else {
+      this._lastPasteKey = key;
+      this._consecutivePasteAtSameSpot = 0;
+    }
+
+    const step = 22 * this._consecutivePasteAtSameSpot;
+    return {
+      x: Math.round(base.x + step),
+      y: Math.round(base.y + step)
+    };
+  }
+
   async _handlePasteEvent(e) {
     const html = e.clipboardData?.getData('text/html') || '';
     const plain = e.clipboardData?.getData('text/plain') || '';
@@ -521,12 +645,12 @@ class WhiteboardApp {
       const meta = decodeObjPayload(imgMetaMatch[1]);
       if (meta && meta.assetPath && meta.repoKey === this.storage.getRepoKey()) {
         e.preventDefault();
-        const center = this.viewport.getCenterWorld();
+        const pt = this._getPasteWorldPoint();
         const newObj = {
           id: uid('img'),
           type: 'image',
-          x: Math.round(center.x - (meta.w || 360) / 2),
-          y: Math.round(center.y - (meta.h || 260) / 2),
+          x: Math.round(pt.x - (meta.w || 360) / 2),
+          y: Math.round(pt.y - (meta.h || 260) / 2),
           w: meta.w || 360,
           h: meta.h || 260,
           rotation: meta.rotation || 0,
@@ -539,38 +663,36 @@ class WhiteboardApp {
         this.setTool('select', { keepSelection: true });
         this.selection.selectOnly([newObj.id]);
         this._onBoardMutated('paste-image', { changedObjectIds: [newObj.id] });
-        this.toast('🖼️ Фото вставлено (без дубля в хмарі)');
+        this.toast('🖼️ Фото вставлено під курсор');
         return;
       }
-      // Different account/repo -> fall through to imgItem so the real PNG gets uploaded to THIS account!
     }
 
     // 2) Any Image from OS clipboard (screenshot, photo copied from another account/browser, etc.)
     if (imgItem && !this.isStudentMode) {
       e.preventDefault();
       const file = imgItem.getAsFile();
-      if (file) await this._handleImageInsert(file);
+      if (file) await this._handleImageInsert(file, this._getPasteWorldPoint());
       return;
     }
 
-    // 3) Whiteboard Single Text / Note with preserved font & style (works across accounts & browsers!)
+    // 3) Whiteboard Single Text / Note with preserved font & style -> ALWAYS paste under cursor!
     const objMetaMatch = html.match(/data-wb-obj="([^"]+)"/);
     if (objMetaMatch) {
       const parsed = decodeObjPayload(objMetaMatch[1]);
       if (parsed && parsed.obj) {
         e.preventDefault();
-        const sameBoard = parsed.sourceBoardId && parsed.sourceBoardId === this.currentBoard?.id;
         this.selection.pasteInternal(
           { objects: [parsed.obj], strokes: [] },
-          { centerInViewport: !sameBoard }
+          { targetPoint: this._getPasteWorldPoint() }
         );
         this.setTool('select', { keepSelection: true });
-        this.toast('Вставлено на дошку');
+        this.toast('Вставлено під курсор');
         return;
       }
     }
 
-    // 4) Multi-item Whiteboard clipboard (same browser tabs via localStorage)
+    // 4) Multi-item Whiteboard clipboard (same board or cross-tab) -> ALWAYS paste under cursor!
     const multiMatch = html.match(/data-wb-multi="([^"]+)"/);
     const markerStamp = multiMatch ? multiMatch[1] : (plain.startsWith(CLIPBOARD_MARKER_PREFIX) ? plain.trim() : null);
     if (markerStamp) {
@@ -587,7 +709,6 @@ class WhiteboardApp {
 
       if (shared) {
         e.preventDefault();
-        const sameBoard = shared.sourceBoardId === this.currentBoard?.id;
         const sameRepo = shared.repoKey === this.storage.getRepoKey();
         const payload = shared.payload;
         if (!sameRepo && (payload.objects || []).some((o) => o.type === 'image')) {
@@ -595,38 +716,38 @@ class WhiteboardApp {
           if (nonImgs.length || (payload.strokes || []).length) {
             this.selection.pasteInternal(
               { objects: nonImgs, strokes: payload.strokes || [] },
-              { centerInViewport: !sameBoard }
+              { targetPoint: this._getPasteWorldPoint() }
             );
           }
           this.toast('Між різними акаунтами фото копіюйте по одному (Ctrl+C -> Ctrl+V)');
           return;
         }
-        this.selection.pasteInternal(payload, { centerInViewport: !sameBoard });
+        this.selection.pasteInternal(payload, { targetPoint: this._getPasteWorldPoint() });
         this.setTool('select', { keepSelection: true });
         return;
       }
 
       if (this.selection.hasClipboard()) {
         e.preventDefault();
-        this.selection.pasteInternal(null, { centerInViewport: false });
+        this.selection.pasteInternal(null, { targetPoint: this._getPasteWorldPoint() });
         return;
       }
     }
 
-    // 5) Plain text / link / file path from anywhere
+    // 5) Plain text / link / file path from anywhere -> paste under cursor!
     if (plain.trim()) {
       e.preventDefault();
       const defColor = this.currentBoard?.bgTheme === 'light' ? '#18202c' : '#f3f5f9';
-      const obj = this.objects.addTextAt(this.viewport.getCenterWorld(), defColor, plain.trim(), this.defaultFont);
+      const obj = this.objects.addTextAt(this._getPasteWorldPoint(), defColor, plain.trim(), this.defaultFont);
       this.setTool('select', { keepSelection: true });
       this.selection.selectOnly([obj.id]);
-      this.toast('Текст вставлено на дошку');
+      this.toast('Текст вставлено під курсор');
       return;
     }
 
     if (this.selection.hasClipboard()) {
       e.preventDefault();
-      this.selection.pasteInternal(null, { centerInViewport: false });
+      this.selection.pasteInternal(null, { targetPoint: this._getPasteWorldPoint() });
     }
   }
 
@@ -668,83 +789,70 @@ class WhiteboardApp {
   }
 
 
-  // --- MOVABLE MARKERS & TELEPORT WITH SELECTION ---
+  // --- MOVABLE MARKERS RIGHT SIDEBAR & TELEPORT WITH SELECTION ---
 
-  _openMarkersPopover() {
-    if (this.isStudentMode) return;
-    this._renderMarkersUI();
-    const pop = $('markers-popover');
-    pop.classList.remove('hidden');
-    const inp = pop.querySelector('.markers-add-input');
-    if (inp) {
-      setTimeout(() => {
-        inp.focus();
-        inp.select();
-      }, 30);
+  _setMarkersSidebarCollapsed(collapsed, persist = true) {
+    const sidebar = $('markers-sidebar');
+    const edgeTab = $('btn-open-markers-tab');
+    const topBtn = $('btn-markers-menu');
+    if (!sidebar) return;
+
+    sidebar.classList.toggle('collapsed', Boolean(collapsed));
+    if (edgeTab) edgeTab.classList.toggle('hidden', !collapsed);
+    if (topBtn) topBtn.classList.toggle('panel-open', !collapsed);
+
+    if (persist) {
+      try {
+        localStorage.setItem(STORAGE_KEYS.MARKERS_PANEL_COLLAPSED, collapsed ? '1' : '0');
+      } catch {}
     }
+    setTimeout(() => this.objects.scheduleViewportSync(), 220);
+  }
+
+  _openMarkersSidebar(focusInput = false) {
+    if (this.isStudentMode) return;
+    this._setMarkersSidebarCollapsed(false, true);
+    this._renderMarkersUI();
+    if (focusInput) {
+      const inp = $('input-new-marker');
+      if (inp) setTimeout(() => inp.focus(), 60);
+    }
+  }
+
+  _clearMarkerDragClasses() {
+    const listEl = $('markers-sidebar-list');
+    if (!listEl) return;
+    listEl.querySelectorAll('.marker-row').forEach((el) => {
+      el.classList.remove('dragging', 'drag-over-top', 'drag-over-bottom');
+    });
   }
 
   _renderMarkersUI() {
     if (this.isStudentMode) return;
     const markers = this.objects ? this.objects.getMarkers() : [];
+    const countStr = String(markers.length);
     const countEl = $('markers-count');
-    if (countEl) countEl.textContent = String(markers.length);
+    if (countEl) countEl.textContent = countStr;
+    const sideCountEl = $('markers-sidebar-count');
+    if (sideCountEl) sideCountEl.textContent = countStr;
     const btnMenu = $('btn-markers-menu');
     if (btnMenu) btnMenu.classList.toggle('has-markers', markers.length > 0);
 
-    const pop = $('markers-popover');
-    if (!pop) return;
-    pop.innerHTML = '';
+    const inp = $('input-new-marker');
+    if (inp && document.activeElement !== inp) {
+      const nextLbl = this.objects.getNextMarkerLabel();
+      inp.placeholder = `Номер або назва (${nextLbl})...`;
+    }
 
-    // Add marker row
-    const addRow = document.createElement('div');
-    addRow.className = 'markers-add-row';
-
-    const inp = document.createElement('input');
-    inp.className = 'input markers-add-input';
-    inp.type = 'text';
-    inp.maxLength = 32;
-    inp.placeholder = 'Номер або назва...';
-    inp.value = this.objects.getNextMarkerLabel();
-
-    const btnAdd = document.createElement('button');
-    btnAdd.className = 'btn btn-primary btn-sm';
-    btnAdd.textContent = '+ Тут';
-    btnAdd.title = 'Поставити рухому мітку в центрі поточного екрана';
-
-    const createNow = () => {
-      const label = inp.value.trim() || this.objects.getNextMarkerLabel();
-      const center = this.viewport.getCenterWorld();
-      const created = this.objects.addMarkerAt(center, label);
-      this.setTool('select', { keepSelection: true });
-      this.selection.selectOnly([created.id]);
-      this.toast(`🚩 Мітку «${created.label}» поставлено (її можна перетягувати)`);
-      pop.classList.add('hidden');
-    };
-
-    btnAdd.addEventListener('click', (e) => {
-      e.stopPropagation();
-      createNow();
-    });
-    inp.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        createNow();
-      }
-    });
-
-    addRow.append(inp, btnAdd);
-    pop.appendChild(addRow);
-
-    const listEl = document.createElement('div');
-    listEl.className = 'markers-list';
+    const listEl = $('markers-sidebar-list');
+    if (!listEl) return;
+    listEl.innerHTML = '';
 
     if (!markers.length) {
       const empty = document.createElement('div');
       empty.className = 'markers-empty';
-      empty.textContent = 'Натисніть «+ Тут», щоб поставити першу мітку на потрібній ділянці дошки. Потім можна переносити до неї виділені фото й текст у 1 клік!';
+      empty.textContent = 'Натисніть «+ Тут», щоб поставити першу мітку. Усі мітки будуть видні в цьому списку, їх можна перетягувати в потрібному порядку.';
       listEl.appendChild(empty);
-      pop.appendChild(listEl);
       return;
     }
 
@@ -755,9 +863,17 @@ class WhiteboardApp {
     for (const m of markers) {
       const row = document.createElement('div');
       row.className = 'marker-row';
+      row.dataset.markerId = m.id;
+      row.draggable = true;
+
+      const grip = document.createElement('span');
+      grip.className = 'marker-drag-handle';
+      grip.textContent = '⋮⋮';
+      grip.title = 'Потягніть, щоб змінити порядок мітки';
 
       const jumpBtn = document.createElement('button');
       jumpBtn.className = 'marker-jump-btn';
+      jumpBtn.draggable = false;
       jumpBtn.title = `Перейти до мітки «${m.label}»`;
 
       const dot = document.createElement('span');
@@ -771,7 +887,6 @@ class WhiteboardApp {
       jumpBtn.append(dot, lbl);
       jumpBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        pop.classList.add('hidden');
         this.jumpToMarker(m.id);
       });
 
@@ -781,11 +896,11 @@ class WhiteboardApp {
       if (selectedMovable.length > 0 && !this.selection.selectedIds.has(m.id)) {
         const sendBtn = document.createElement('button');
         sendBtn.className = 'marker-send-mini';
-        sendBtn.textContent = '📦 Сюди';
+        sendBtn.draggable = false;
+        sendBtn.textContent = '📦';
         sendBtn.title = `Перенести виділене (${selectedMovable.length}) до мітки «${m.label}»`;
         sendBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          pop.classList.add('hidden');
           this.sendSelectedToMarker(m.id);
         });
         actions.appendChild(sendBtn);
@@ -793,16 +908,17 @@ class WhiteboardApp {
 
       const editBtn = document.createElement('button');
       editBtn.className = 'board-mini-btn';
+      editBtn.draggable = false;
       editBtn.textContent = '✏️';
       editBtn.title = 'Перейменувати / змінити колір мітки';
       editBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        pop.classList.add('hidden');
         this._openMarkerModal(m.id);
       });
 
       const delBtn = document.createElement('button');
       delBtn.className = 'board-mini-btn danger';
+      delBtn.draggable = false;
       delBtn.textContent = '🗑️';
       delBtn.title = 'Видалити мітку';
       delBtn.addEventListener('click', (e) => {
@@ -816,11 +932,60 @@ class WhiteboardApp {
       });
 
       actions.append(editBtn, delBtn);
-      row.append(jumpBtn, actions);
+      row.append(grip, jumpBtn, actions);
+
+      // Drag & drop handlers for custom marker sequence
+      row.addEventListener('dragstart', (e) => {
+        if (e.target && e.target.closest && e.target.closest('.marker-row-actions')) {
+          e.preventDefault();
+          return;
+        }
+        this.draggingMarkerId = m.id;
+        row.classList.add('dragging');
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', m.id);
+        }
+      });
+
+      row.addEventListener('dragover', (e) => {
+        if (!this.draggingMarkerId || this.draggingMarkerId === m.id) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        const rect = row.getBoundingClientRect();
+        const isTop = e.clientY < rect.top + rect.height / 2;
+        row.classList.toggle('drag-over-top', isTop);
+        row.classList.toggle('drag-over-bottom', !isTop);
+      });
+
+      row.addEventListener('dragleave', () => {
+        row.classList.remove('drag-over-top', 'drag-over-bottom');
+      });
+
+      row.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const draggedId = this.draggingMarkerId || e.dataTransfer?.getData('text/plain');
+        if (!draggedId || draggedId === m.id) {
+          this._clearMarkerDragClasses();
+          return;
+        }
+        const rect = row.getBoundingClientRect();
+        const pos = e.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+        this.draggingMarkerId = null;
+        this._clearMarkerDragClasses();
+        if (this.objects.reorderMarker(draggedId, m.id, pos)) {
+          if (this.selection) this.selection.render();
+          this.toast('Порядок міток збережено');
+        }
+      });
+
+      row.addEventListener('dragend', () => {
+        this.draggingMarkerId = null;
+        this._clearMarkerDragClasses();
+      });
+
       listEl.appendChild(row);
     }
-
-    pop.appendChild(listEl);
   }
 
   _updateTeleportBackUI() {
@@ -1037,7 +1202,8 @@ class WhiteboardApp {
         id: this.inviteRoomId,
         title: meta.boardTitle || 'Урок',
         bgTheme: meta.bgTheme || 'dark',
-        bgPattern: meta.bgPattern || 'dots'
+        bgPattern: meta.bgPattern || 'dots',
+        bgStyle: meta.bgStyle || null
       };
       $('current-board-title').value = this.currentBoard.title;
       this._applyBoardBgUI();
@@ -1207,6 +1373,7 @@ class WhiteboardApp {
       }
       if (meta.bgTheme) this.currentBoard.bgTheme = meta.bgTheme;
       if (meta.bgPattern) this.currentBoard.bgPattern = meta.bgPattern;
+      if (meta.bgStyle !== undefined) this.currentBoard.bgStyle = meta.bgStyle;
       this._applyBoardBgUI();
     }
 
@@ -1326,7 +1493,7 @@ class WhiteboardApp {
       this.isDirty = false;
       this.teleportHistory = [];
       this._updateTeleportBackUI();
-      $('markers-popover').classList.add('hidden');
+      $('bg-style-popover').classList.add('hidden');
       this._renderMarkersUI();
 
       this.setStatus(this.storage.isCloudReady() ? 'saved' : 'local',
@@ -1338,12 +1505,69 @@ class WhiteboardApp {
     }
   }
 
+  _getEffectiveBgStyle() {
+    const s = this.currentBoard?.bgStyle || {};
+    return {
+      color: typeof s.color === 'string' ? s.color : DEFAULT_BG_STYLE.color,
+      opacity: typeof s.opacity === 'number' ? s.opacity : DEFAULT_BG_STYLE.opacity,
+      thickness: typeof s.thickness === 'number' ? s.thickness : DEFAULT_BG_STYLE.thickness
+    };
+  }
+
+  _syncBgStyleControlsUI() {
+    const style = this._getEffectiveBgStyle();
+    const pattern = this.currentBoard?.bgPattern || 'dots';
+    const btn = $('btn-bg-style');
+    if (btn) {
+      btn.classList.toggle('hidden', pattern === 'none');
+    }
+    if (pattern === 'none') {
+      $('bg-style-popover')?.classList.add('hidden');
+    }
+
+    const opPct = Math.round(style.opacity * 100);
+    const rOp = $('range-bg-opacity');
+    const vOp = $('val-bg-opacity');
+    if (rOp) rOp.value = String(opPct);
+    if (vOp) vOp.textContent = `${opPct}%`;
+
+    const rTh = $('range-bg-thickness');
+    const vTh = $('val-bg-thickness');
+    if (rTh) rTh.value = String(style.thickness);
+    if (vTh) vTh.textContent = `${style.thickness} px`;
+
+    const colInp = $('input-bg-line-color');
+    if (colInp && /^#[0-9a-fA-F]{6}$/.test(style.color)) {
+      colInp.value = style.color;
+    }
+
+    const swWrap = $('bg-line-swatches');
+    if (swWrap) {
+      swWrap.querySelectorAll('.bg-line-swatch').forEach((b) => {
+        b.classList.toggle('active', (b.dataset.color || '') === (style.color || ''));
+      });
+    }
+  }
+
+  _updateBgStyle(patch) {
+    if (!this.currentBoard || this.isStudentMode) return;
+    const next = { ...this._getEffectiveBgStyle(), ...patch };
+    this.currentBoard.bgStyle = next;
+    this._applyBoardBgUI();
+    this.live.syncBoardMeta({ bgStyle: next });
+    this._markDirty();
+  }
+
   _applyBoardBgUI() {
     const theme = this.currentBoard?.bgTheme || 'dark';
     const pattern = this.currentBoard?.bgPattern || 'dots';
-    this.viewport.setBackground(theme, pattern);
+    const bgStyle = this._getEffectiveBgStyle();
+    this.viewport.setBackground(theme, pattern, bgStyle);
     $('btn-bg-theme').textContent = theme === 'light' ? '☀️ Світлий' : '🌑 Темний';
     $('select-bg-pattern').value = pattern;
+    if (!this.isStudentMode) {
+      this._syncBgStyleControlsUI();
+    }
   }
 
   _getSnapshot() {
@@ -1676,7 +1900,7 @@ class WhiteboardApp {
       $('modal-settings').classList.add('hidden');
       $('modal-board').classList.add('hidden');
       $('modal-marker').classList.add('hidden');
-      $('markers-popover').classList.add('hidden');
+      $('bg-style-popover').classList.add('hidden');
       return;
     }
 
@@ -1749,7 +1973,7 @@ class WhiteboardApp {
         this._pasteHandled = false;
         setTimeout(() => {
           if (!this._pasteHandled && this.selection.hasClipboard()) {
-            this.selection.pasteInternal();
+            this.selection.pasteInternal(null, { targetPoint: this._getPasteWorldPoint() });
           }
         }, 40);
         return;

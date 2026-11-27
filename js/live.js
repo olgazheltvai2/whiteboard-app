@@ -258,6 +258,7 @@ export class LiveSessionManager {
         boardTitle: board.title || 'Спільна дошка',
         bgTheme: board.bgTheme || 'dark',
         bgPattern: board.bgPattern || 'dots',
+        bgStyle: board.bgStyle ? stripUndefined(board.bgStyle) : null,
         globalPerm: this.globalPerm,
         followCamera: false,
         active: true,
@@ -411,12 +412,13 @@ export class LiveSessionManager {
     });
   }
 
-  async syncBoardMeta({ title, bgTheme, bgPattern }) {
+  async syncBoardMeta({ title, bgTheme, bgPattern, bgStyle }) {
     if (!this.isActive() || this.role !== 'teacher') return;
     const updates = {};
     if (typeof title === 'string') updates.boardTitle = title;
     if (typeof bgTheme === 'string') updates.bgTheme = bgTheme;
     if (typeof bgPattern === 'string') updates.bgPattern = bgPattern;
+    if (bgStyle !== undefined) updates.bgStyle = bgStyle ? stripUndefined(bgStyle) : null;
     await this.fb.update(this.fb.ref(this.db, `rooms/${this.roomId}/meta`), updates);
   }
 

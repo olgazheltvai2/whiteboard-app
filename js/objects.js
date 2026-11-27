@@ -207,7 +207,12 @@ export class ObjectsManager {
   getMarkers() {
     return this.objects
       .filter((o) => o.type === 'marker')
-      .sort((a, b) => String(a.label || '').localeCompare(String(b.label || ''), 'uk', { numeric: true, sensitivity: 'base' }));
+      .sort((a, b) => {
+        const ao = typeof a.order === 'number' ? a.order : Infinity;
+        const bo = typeof b.order === 'number' ? b.order : Infinity;
+        if (ao !== bo) return ao - bo;
+        return String(a.label || '').localeCompare(String(b.label || ''), 'uk', { numeric: true, sensitivity: 'base' });
+      });
   }
 
   getNextMarkerLabel() {
@@ -229,8 +234,9 @@ export class ObjectsManager {
 
   addMarkerAt(worldPoint, label = '', color = '') {
     const cleanLabel = String(label || '').trim() || this.getNextMarkerLabel();
-    const existingCount = this.objects.filter((o) => o.type === 'marker').length;
-    const chosenColor = color || MARKER_COLORS[existingCount % MARKER_COLORS.length];
+    const existingMarkers = this.getMarkers();
+    const maxOrder = existingMarkers.reduce((m, mk, idx) => Math.max(m, typeof mk.order === 'number' ? mk.order : idx), -1);
+    const chosenColor = color || MARKER_COLORS[existingMarkers.length % MARKER_COLORS.length];
     const w = this._calcMarkerWidth(cleanLabel);
     const h = 44;
     const obj = {
@@ -244,7 +250,8 @@ export class ObjectsManager {
       zIndex: this.getNextZIndex(),
       locked: false,
       label: cleanLabel,
-      color: chosenColor
+      color: chosenColor,
+      order: maxOrder + 1
     };
     this.objects.push(obj);
     this.objectMap.set(obj.id, obj);
@@ -252,6 +259,32 @@ export class ObjectsManager {
     this.onMarkersChange();
     this.onMutate('add-marker', { changedObjectIds: [obj.id] });
     return obj;
+  }
+
+
+  reorderMarker(draggedId, targetId, position = 'before') {
+    if (!draggedId || !targetId || draggedId === targetId) return false;
+    const list = this.getMarkers();
+    const fromIdx = list.findIndex((m) => m.id === draggedId);
+    const targetIdx = list.findIndex((m) => m.id === targetId);
+    if (fromIdx === -1 || targetIdx === -1) return false;
+
+    const [moved] = list.splice(fromIdx, 1);
+    let insertIdx = list.findIndex((m) => m.id === targetId);
+    if (insertIdx === -1) {
+      list.push(moved);
+    } else {
+      if (position === 'after') insertIdx += 1;
+      list.splice(insertIdx, 0, moved);
+    }
+
+    list.forEach((m, idx) => {
+      m.order = idx;
+    });
+
+    this.onMarkersChange();
+    this.onMutate('reorder-markers', { changedObjectIds: list.map((m) => m.id) });
+    return true;
   }
 
   updateMarkerProps(id, { label, color }) {

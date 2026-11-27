@@ -60,14 +60,40 @@
               <option value="propysy">✍️ Прописи (коса)</option>
               <option value="none">⬜ Чистий</option>
             </select>
+            <div class="bg-style-wrap">
+              <button id="btn-bg-style" class="chip-btn" title="Товщина, колір і контрастність ліній фону">🎨 Лінії</button>
+              <div id="bg-style-popover" class="bg-style-popover hidden">
+                <div class="bg-style-section">
+                  <div class="bg-style-head">
+                    <span>Колір ліній</span>
+                    <input id="input-bg-line-color" class="bg-color-input" type="color" value="#60a5fa" title="Обрати довільний колір ліній" />
+                  </div>
+                  <div id="bg-line-swatches" class="bg-line-swatches"></div>
+                </div>
+                <div class="bg-style-section">
+                  <div class="bg-style-head">
+                    <span>Контрастність</span>
+                    <span id="val-bg-opacity" class="bg-style-val">34%</span>
+                  </div>
+                  <input id="range-bg-opacity" class="bg-range" type="range" min="10" max="100" step="2" value="34" />
+                </div>
+                <div class="bg-style-section">
+                  <div class="bg-style-head">
+                    <span>Товщина ліній</span>
+                    <span id="val-bg-thickness" class="bg-style-val">1.5 px</span>
+                  </div>
+                  <input id="range-bg-thickness" class="bg-range" type="range" min="1" max="4" step="0.5" value="1.5" />
+                </div>
+                <div class="bg-style-footer">
+                  <button id="btn-bg-style-reset" class="btn btn-ghost btn-sm full-width" type="button">Скинути на стандартні</button>
+                </div>
+              </div>
+            </div>
           </div>
 
-          <div class="markers-wrap">
-            <button id="btn-markers-menu" class="chip-btn chip-markers" title="Мітки на дошці: ставити, переходити та переносити до них фото й текст">
-              🚩 Мітки (<span id="markers-count">0</span>)
-            </button>
-            <div id="markers-popover" class="markers-popover hidden"></div>
-          </div>
+          <button id="btn-markers-menu" class="chip-btn chip-markers" title="Показати або сховати праву панель міток">
+            🚩 Мітки (<span id="markers-count">0</span>)
+          </button>
           <button id="btn-teleport-back" class="chip-btn chip-teleport-back" disabled title="Повернутись точно на те місце, звідки ви перейшли по мітці">
             ⬅️ Повернутись
           </button>
@@ -240,7 +266,32 @@
         <button id="btn-zoom-home" class="icon-btn" title="Повернутися до центрального фото (або закріпленого якоря)">🎯</button>
         <button id="btn-zoom-fit" class="icon-btn" title="Показати весь вміст дошки">⊡</button>
       </div>
+
+      <!-- Edge Tab to Reopen Right Markers Sidebar -->
+      <button id="btn-open-markers-tab" class="markers-edge-tab teacher-only hidden" title="Відкрити панель міток">
+        ⟨ 🚩
+      </button>
     </main>
+
+    <!-- Right Sidebar: All Board Markers (Teacher Only) -->
+    <aside id="markers-sidebar" class="markers-sidebar teacher-only">
+      <div class="sidebar-header">
+        <div class="brand">
+          <span class="brand-icon">🚩</span>
+          <span class="brand-title">Мітки (<span id="markers-sidebar-count">0</span>)</span>
+        </div>
+        <button id="btn-collapse-markers" class="icon-btn" title="Сховати панель міток направо">⟩</button>
+      </div>
+
+      <div class="markers-sidebar-add">
+        <div class="markers-add-row">
+          <input id="input-new-marker" class="input" type="text" maxlength="32" placeholder="Номер або назва..." autocomplete="off" />
+          <button id="btn-add-marker-here" class="btn btn-primary btn-sm" title="Поставити рухому мітку в центрі поточного екрана">+ Тут</button>
+        </div>
+      </div>
+
+      <div id="markers-sidebar-list" class="markers-sidebar-list"></div>
+    </aside>
   </div>
 
   <!-- Modal: Settings (GitHub + Firebase) -->
